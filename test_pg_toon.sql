@@ -96,7 +96,7 @@ SELECT assert_toon('val: contains backslash must quote and escape',
     toon_quote_value(E'path\\to', ','), E'"path\\\\to"');
 
 SELECT assert_toon('val: contains double quote must quote and escape',
-    toon_quote_value('say "hi"', ','), '"say \\"hi\\""');
+    toon_quote_value('say "hi"', ','), '"say \"hi\""');
 
 SELECT assert_toon('val: starts with hyphen must quote',
     toon_quote_value('-flag', ','), '"-flag"');

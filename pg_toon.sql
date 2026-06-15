@@ -74,7 +74,9 @@ LANGUAGE sql IMMUTABLE AS $$
         -- JSON null (text_val is SQL NULL from json_each_text)
         WHEN text_val IS NULL THEN 'null'
         -- §3: NaN, Infinity, -Infinity → null
-        WHEN raw_json IN ('NaN', 'Infinity', '-Infinity') THEN 'null'
+        -- PG wraps these as JSON strings ("NaN"), so check both forms
+        WHEN raw_json IN ('NaN', 'Infinity', '-Infinity',
+                          '"NaN"', '"Infinity"', '"-Infinity"') THEN 'null'
         -- JSON booleans
         WHEN raw_json IN ('true', 'false') THEN raw_json
         -- JSON numbers (not quoted in JSON representation)
@@ -157,8 +159,8 @@ BEGIN
 
     -- Build row: encode each value with delimiter-aware quoting
     SELECT string_agg(
-        toon_encode_field(e.value::text, t.value, delim)
-        ORDER BY e.ordinality
+        toon_encode_field(e.value::text, t.value, delim),
+        delim ORDER BY e.ordinality
     )
     INTO row_line
     FROM json_each(rec_json) WITH ORDINALITY AS e
