@@ -1,4 +1,4 @@
--- pg_toon: TOON (Token-Oriented Object Notation) v3.3 functions for PostgreSQL
+-- pgtoon: TOON (Token-Oriented Object Notation) functions for PostgreSQL
 --
 -- Implements encoding functions conforming to the TOON Specification v3.3
 -- https://github.com/toon-format/spec/blob/main/SPEC.md

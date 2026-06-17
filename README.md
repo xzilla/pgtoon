@@ -1,4 +1,4 @@
-# pgTOON — TOON Encoding for PostgreSQL
+# pgtoon — TOON Support for PostgreSQL
 
 A pure PL/pgSQL implementation of [TOON (Token-Oriented Object Notation)](https://toonformat.dev) encoding for PostgreSQL, conforming to **TOON Specification v3.3**.
 
@@ -25,11 +25,42 @@ vs. the equivalent JSON (96 bytes larger):
 
 ## Installation
 
+### Standard (filesystem extension)
+
 ```sql
-\i pg_toon.sql
+\i pgtoon--0.1.sql
 ```
 
 Requires PostgreSQL 12+.
+
+### As a Trusted Language Extension (pg_tle)
+
+For managed environments without filesystem access (e.g. Amazon RDS / Aurora),
+install via [pg_tle](https://github.com/aws/pg_tle). The `create_pgtle_scripts.sh`
+helper reads `pgtoon.control` and generates `.pgtle-pgtoon.sql`:
+
+```sh
+EXTENSION=pgtoon ./create_pgtle_scripts.sh pgtoon--0.1.sql
+psql -f .pgtle-pgtoon.sql
+```
+
+Or via the Makefile (defaults to `USE_PGTLE=1`):
+
+```sh
+make install PGDB=mydb PGUSER=postgres PGHOST=localhost PGPORT=5432
+```
+
+Then, in the target database:
+
+```sql
+CREATE EXTENSION pgtoon;
+```
+
+To install as a standard filesystem extension via PGXS instead:
+
+```sh
+make install USE_PGTLE=0
+```
 
 ## Functions
 
@@ -130,8 +161,8 @@ Per §11, three delimiters are supported:
 ## Running Tests
 
 ```sql
-\i pg_toon.sql
-\i test_pg_toon.sql
+\i pgtoon--0.1.sql
+\i test_pgtoon.sql
 ```
 
 The test suite validates key quoting, value quoting, object encoding, tabular array encoding, null handling, NaN/Infinity normalization, and delimiter variants.

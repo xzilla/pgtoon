@@ -1,8 +1,8 @@
--- pg_toon test suite
+-- pgtoon test suite
 -- Tests conform to TOON Specification v3.3
 -- https://github.com/toon-format/spec/blob/main/SPEC.md
 --
--- Run: psql -f pg_toon.sql -f test_pg_toon.sql
+-- Run: psql -f pgtoon--0.1.sql -f test_pgtoon.sql
 
 \set ON_ERROR_STOP on
 

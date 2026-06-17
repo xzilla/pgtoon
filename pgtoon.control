@@ -1,0 +1,3 @@
+comment = 'TOON (Token-Oriented Object Notation) v3.3 encoding functions'
+default_version = '0.1'
+relocatable = true
