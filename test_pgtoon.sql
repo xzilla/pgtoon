@@ -257,6 +257,71 @@ SELECT assert_toon('agg: NaN in tabular',
     E'[1]{val,label}:\n  null,x');
 
 -- =============================================================================
+-- to_toon — generic value encoding
+-- =============================================================================
+
+-- Scalars
+SELECT assert_toon('to_toon: integer',
+    to_toon(42), '42');
+
+SELECT assert_toon('to_toon: float',
+    to_toon(3.14), '3.14');
+
+SELECT assert_toon('to_toon: boolean true',
+    to_toon(true), 'true');
+
+SELECT assert_toon('to_toon: boolean false',
+    to_toon(false), 'false');
+
+SELECT assert_toon('to_toon: null',
+    to_toon(NULL::int), 'null');
+
+SELECT assert_toon('to_toon: simple string',
+    to_toon('hello'::text), 'hello');
+
+SELECT assert_toon('to_toon: string needing quote (comma)',
+    to_toon('a,b'::text), '"a,b"');
+
+SELECT assert_toon('to_toon: string literal true',
+    to_toon('true'::text), '"true"');
+
+SELECT assert_toon('to_toon: NaN float',
+    to_toon('NaN'::float8), 'null');
+
+SELECT assert_toon('to_toon: NaN string (should NOT be null)',
+    to_toon('NaN'::text), 'NaN');
+
+SELECT assert_toon('to_toon: Infinity string (should NOT be null)',
+    to_toon('Infinity'::text), 'Infinity');
+
+SELECT assert_toon('to_toon: -0',
+    to_toon('-0'::float8), '0');
+
+-- Arrays (§9.1 inline primitive)
+SELECT assert_toon('to_toon: int array',
+    to_toon(ARRAY[1,2,3]), '[3]: 1,2,3');
+
+SELECT assert_toon('to_toon: text array',
+    to_toon(ARRAY['foo','bar','baz']), '[3]: foo,bar,baz');
+
+SELECT assert_toon('to_toon: text array with comma in value',
+    to_toon(ARRAY['a,b','c']), '[2]: "a,b",c');
+
+SELECT assert_toon('to_toon: empty array',
+    to_toon(ARRAY[]::int[]), '[]');
+
+SELECT assert_toon('to_toon: array with null',
+    to_toon(ARRAY[1,NULL,3]::int[]), '[3]: 1,null,3');
+
+SELECT assert_toon('to_toon: array with pipe delimiter',
+    to_toon(ARRAY[1,2,3], '|'), '[3|]: 1|2|3');
+
+-- Record (delegates to row_to_toon)
+SELECT assert_toon('to_toon: record',
+    to_toon(row(1, 'hi')),
+    E'f1: 1\nf2: hi');
+
+-- =============================================================================
 -- Report results
 -- =============================================================================
 SELECT

@@ -121,6 +121,93 @@ END;
 $$;
 
 -- =============================================================================
+-- to_toon(anyelement, delimiter) — Convert any value to TOON
+--
+-- Handles scalars, arrays, and records (analog of to_json(anyelement)):
+--   scalar        → primitive token
+--   array         → [N]: v1,v2,... (§9.1 inline primitive array)
+--   record/row    → key: value object (§8, delegates to row_to_toon)
+--   NULL          → null
+-- =============================================================================
+CREATE OR REPLACE FUNCTION to_toon(val anyelement, delim text DEFAULT ',')
+RETURNS text
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    j json;
+    jtype text;
+    n int;
+    elems text[];
+    delim_sym text;
+    valtype text;
+BEGIN
+    IF val IS NULL THEN
+        RETURN 'null';
+    END IF;
+
+    -- §3: NaN/Infinity normalization for float types only
+    valtype := pg_typeof(val)::text;
+    IF valtype IN ('double precision', 'real') THEN
+        IF val::text IN ('NaN', 'Infinity', '-Infinity') THEN
+            RETURN 'null';
+        END IF;
+        IF val::text = '-0' THEN
+            RETURN '0';
+        END IF;
+    END IF;
+
+    j := to_json(val);
+    jtype := json_typeof(j);
+
+    -- Scalar types: number, boolean, string, null
+    IF jtype = 'number' THEN
+        DECLARE raw text := j::text;
+        BEGIN
+            IF raw = '-0' THEN RETURN '0'; END IF;
+            RETURN raw;
+        END;
+    ELSIF jtype = 'boolean' THEN
+        RETURN j::text;
+    ELSIF jtype = 'null' THEN
+        RETURN 'null';
+    ELSIF jtype = 'string' THEN
+        RETURN toon_quote_value(j#>>'{}', delim);
+
+    -- Array: emit as inline primitive array [N]: v1,v2,...
+    ELSIF jtype = 'array' THEN
+        n := json_array_length(j);
+        IF n = 0 THEN
+            RETURN '[]';
+        END IF;
+
+        SELECT array_agg(
+            toon_encode_field(e.value::text, t.value, delim)
+            ORDER BY e.ordinality
+        )
+        INTO elems
+        FROM json_array_elements(j) WITH ORDINALITY AS e
+        JOIN json_array_elements_text(j) WITH ORDINALITY AS t
+            ON e.ordinality = t.ordinality;
+
+        delim_sym := CASE
+            WHEN delim = ',' THEN ''
+            WHEN delim = '|' THEN '|'
+            WHEN delim = E'\t' THEN E'\t'
+            ELSE ''
+        END;
+
+        RETURN '[' || n || delim_sym || ']: ' || array_to_string(elems, delim);
+
+    -- Object (record/composite): delegate to row_to_toon
+    ELSIF jtype = 'object' THEN
+        RETURN row_to_toon(val, delim);
+    END IF;
+
+    -- Fallback (shouldn't reach here)
+    RETURN toon_quote_value(val::text, delim);
+END;
+$$;
+
+-- =============================================================================
 -- toon_agg — Aggregate records into a TOON tabular array (§9.3)
 --
 -- Output format:
