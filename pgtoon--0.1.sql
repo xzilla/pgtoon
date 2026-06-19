@@ -6,17 +6,25 @@
 -- TOON is a line-oriented, indentation-based format that encodes the JSON data
 -- model with explicit structure and minimal quoting. This extension provides:
 --
+--   to_toon(anyelement)         → any value to TOON (scalar/array/record)
 --   row_to_toon(record)         → TOON object (key: value lines)
 --   toon_agg(anyelement)        → TOON tabular array with header + rows
 --
 -- Encoder options: delimiter (comma default), indentSize (2 default)
+--
+-- Security: every function pins search_path to pg_catalog, pg_temp and
+-- qualifies internal calls with @extschema@ (the extension's own schema).
+-- This is substituted at CREATE EXTENSION time (filesystem or pg_tle). For a
+-- standalone psql install, generate a concrete-schema build via `make local`.
 
 -- =============================================================================
 -- toon_escape(text) — Apply §7.1 escape rules inside quoted strings
 -- =============================================================================
-CREATE OR REPLACE FUNCTION toon_escape(val text)
+CREATE FUNCTION toon_escape(val text)
 RETURNS text
-LANGUAGE sql IMMUTABLE STRICT AS $$
+LANGUAGE sql IMMUTABLE STRICT
+SET search_path = pg_catalog, pg_temp
+AS $$
     SELECT replace(replace(replace(replace(replace(
         val,
         E'\\', E'\\\\'),   -- backslash first
@@ -31,12 +39,14 @@ $$;
 -- toon_quote_key(text) — Quote a key per §7.3
 -- Keys MAY be unquoted only if they match ^[A-Za-z_][A-Za-z0-9_.]*$
 -- =============================================================================
-CREATE OR REPLACE FUNCTION toon_quote_key(k text)
+CREATE FUNCTION toon_quote_key(k text)
 RETURNS text
-LANGUAGE sql IMMUTABLE STRICT AS $$
+LANGUAGE sql IMMUTABLE STRICT
+SET search_path = pg_catalog, pg_temp
+AS $$
     SELECT CASE
         WHEN k ~ '^[A-Za-z_][A-Za-z0-9_.]*$' THEN k
-        ELSE '"' || toon_escape(k) || '"'
+        ELSE '"' || @extschema@.toon_escape(k) || '"'
     END
 $$;
 
@@ -44,18 +54,20 @@ $$;
 -- toon_quote_value(text, text) — Quote a string value per §7.2
 -- delim is the active/document delimiter to check against
 -- =============================================================================
-CREATE OR REPLACE FUNCTION toon_quote_value(val text, delim text DEFAULT ',')
+CREATE FUNCTION toon_quote_value(val text, delim text DEFAULT ',')
 RETURNS text
-LANGUAGE sql IMMUTABLE STRICT AS $$
+LANGUAGE sql IMMUTABLE STRICT
+SET search_path = pg_catalog, pg_temp
+AS $$
     SELECT CASE
         WHEN val = ''                                              THEN '""'
-        WHEN val ~ '^\s' OR val ~ '\s$'                           THEN '"' || toon_escape(val) || '"'
+        WHEN val ~ '^\s' OR val ~ '\s$'                           THEN '"' || @extschema@.toon_escape(val) || '"'
         WHEN val IN ('true', 'false', 'null')                     THEN '"' || val || '"'
         WHEN val ~ '^-?\d+(\.\d+)?([eE][+-]?\d+)?$'              THEN '"' || val || '"'
-        WHEN val ~ '[:"\\{}\[\]]'                                  THEN '"' || toon_escape(val) || '"'
-        WHEN val ~ '[\x00-\x1f]'                                  THEN '"' || toon_escape(val) || '"'
-        WHEN position(delim in val) > 0                           THEN '"' || toon_escape(val) || '"'
-        WHEN left(val, 1) = '-'                                   THEN '"' || toon_escape(val) || '"'
+        WHEN val ~ '[:"\\{}\[\]]'                                  THEN '"' || @extschema@.toon_escape(val) || '"'
+        WHEN val ~ '[\x00-\x1f]'                                  THEN '"' || @extschema@.toon_escape(val) || '"'
+        WHEN position(delim in val) > 0                           THEN '"' || @extschema@.toon_escape(val) || '"'
+        WHEN left(val, 1) = '-'                                   THEN '"' || @extschema@.toon_escape(val) || '"'
         ELSE val
     END
 $$;
@@ -67,9 +79,11 @@ $$;
 -- text_val: the value from json_each_text (already unescaped text, NULL for json null)
 -- delim: active delimiter for quoting decisions
 -- =============================================================================
-CREATE OR REPLACE FUNCTION toon_encode_field(raw_json text, text_val text, delim text DEFAULT ',')
+CREATE FUNCTION toon_encode_field(raw_json text, text_val text, delim text DEFAULT ',')
 RETURNS text
-LANGUAGE sql IMMUTABLE AS $$
+LANGUAGE sql IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
     SELECT CASE
         -- JSON null (text_val is SQL NULL from json_each_text)
         WHEN text_val IS NULL THEN 'null'
@@ -83,7 +97,7 @@ LANGUAGE sql IMMUTABLE AS $$
         WHEN raw_json ~ '^-?[0-9]' THEN
             CASE WHEN raw_json = '-0' THEN '0' ELSE raw_json END
         -- JSON strings — text_val is already the raw unescaped content
-        ELSE toon_quote_value(text_val, delim)
+        ELSE @extschema@.toon_quote_value(text_val, delim)
     END
 $$;
 
@@ -96,9 +110,11 @@ $$;
 --
 -- This is the direct analog of row_to_json(record).
 -- =============================================================================
-CREATE OR REPLACE FUNCTION row_to_toon(rec anyelement, delim text DEFAULT ',')
+CREATE FUNCTION row_to_toon(rec anyelement, delim text DEFAULT ',')
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE AS $$
+LANGUAGE plpgsql IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
 DECLARE
     rec_json json;
     lines text[];
@@ -106,8 +122,8 @@ BEGIN
     rec_json := row_to_json(rec);
 
     SELECT array_agg(
-        toon_quote_key(e.key) || ': ' ||
-        toon_encode_field(e.value::text, t.value, delim)
+        @extschema@.toon_quote_key(e.key) || ': ' ||
+        @extschema@.toon_encode_field(e.value::text, t.value, delim)
         ORDER BY e.ordinality
     )
     INTO lines
@@ -129,9 +145,11 @@ $$;
 --   record/row    → key: value object (§8, delegates to row_to_toon)
 --   NULL          → null
 -- =============================================================================
-CREATE OR REPLACE FUNCTION to_toon(val anyelement, delim text DEFAULT ',')
+CREATE FUNCTION to_toon(val anyelement, delim text DEFAULT ',')
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE AS $$
+LANGUAGE plpgsql IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
 DECLARE
     j json;
     jtype text;
@@ -170,7 +188,7 @@ BEGIN
     ELSIF jtype = 'null' THEN
         RETURN 'null';
     ELSIF jtype = 'string' THEN
-        RETURN toon_quote_value(j#>>'{}', delim);
+        RETURN @extschema@.toon_quote_value(j#>>'{}', delim);
 
     -- Array: emit as inline primitive array [N]: v1,v2,...
     ELSIF jtype = 'array' THEN
@@ -180,7 +198,7 @@ BEGIN
         END IF;
 
         SELECT array_agg(
-            toon_encode_field(e.value::text, t.value, delim)
+            @extschema@.toon_encode_field(e.value::text, t.value, delim)
             ORDER BY e.ordinality
         )
         INTO elems
@@ -199,11 +217,11 @@ BEGIN
 
     -- Object (record/composite): delegate to row_to_toon
     ELSIF jtype = 'object' THEN
-        RETURN row_to_toon(val, delim);
+        RETURN @extschema@.row_to_toon(val, delim);
     END IF;
 
     -- Fallback (shouldn't reach here)
-    RETURN toon_quote_value(val::text, delim);
+    RETURN @extschema@.toon_quote_value(val::text, delim);
 END;
 $$;
 
@@ -226,9 +244,11 @@ CREATE TYPE toon_agg_state AS (
     delim text
 );
 
-CREATE OR REPLACE FUNCTION toon_agg_sfunc(state toon_agg_state, rec anyelement, delim text DEFAULT ',')
-RETURNS toon_agg_state
-LANGUAGE plpgsql IMMUTABLE AS $$
+CREATE FUNCTION toon_agg_sfunc(state @extschema@.toon_agg_state, rec anyelement, delim text DEFAULT ',')
+RETURNS @extschema@.toon_agg_state
+LANGUAGE plpgsql IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
 DECLARE
     rec_json json;
     row_line text;
@@ -237,7 +257,7 @@ BEGIN
 
     -- First invocation: capture field names
     IF state.fields IS NULL THEN
-        SELECT string_agg(toon_quote_key(key), delim ORDER BY ordinality)
+        SELECT string_agg(@extschema@.toon_quote_key(key), delim ORDER BY ordinality)
         INTO state.fields
         FROM json_each(rec_json) WITH ORDINALITY;
         state.delim := delim;
@@ -246,7 +266,7 @@ BEGIN
 
     -- Build row: encode each value with delimiter-aware quoting
     SELECT string_agg(
-        toon_encode_field(e.value::text, t.value, delim),
+        @extschema@.toon_encode_field(e.value::text, t.value, delim),
         delim ORDER BY e.ordinality
     )
     INTO row_line
@@ -259,9 +279,11 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION toon_agg_ffunc(state toon_agg_state)
+CREATE FUNCTION toon_agg_ffunc(state @extschema@.toon_agg_state)
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE AS $$
+LANGUAGE plpgsql IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
 DECLARE
     n int;
     header text;
@@ -299,22 +321,24 @@ END;
 $$;
 
 CREATE AGGREGATE toon_agg(anyelement, text) (
-    SFUNC = toon_agg_sfunc,
-    STYPE = toon_agg_state,
-    FINALFUNC = toon_agg_ffunc,
+    SFUNC = @extschema@.toon_agg_sfunc,
+    STYPE = @extschema@.toon_agg_state,
+    FINALFUNC = @extschema@.toon_agg_ffunc,
     INITCOND = '(,,)'
 );
 
 -- Convenience overload with default comma delimiter
-CREATE OR REPLACE FUNCTION toon_agg_sfunc_default(state toon_agg_state, rec anyelement)
-RETURNS toon_agg_state
-LANGUAGE sql IMMUTABLE AS $$
-    SELECT toon_agg_sfunc(state, rec, ',')
+CREATE FUNCTION toon_agg_sfunc_default(state @extschema@.toon_agg_state, rec anyelement)
+RETURNS @extschema@.toon_agg_state
+LANGUAGE sql IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT @extschema@.toon_agg_sfunc(state, rec, ',')
 $$;
 
 CREATE AGGREGATE toon_agg(anyelement) (
-    SFUNC = toon_agg_sfunc_default,
-    STYPE = toon_agg_state,
-    FINALFUNC = toon_agg_ffunc,
+    SFUNC = @extschema@.toon_agg_sfunc_default,
+    STYPE = @extschema@.toon_agg_state,
+    FINALFUNC = @extschema@.toon_agg_ffunc,
     INITCOND = '(,,)'
 );

@@ -25,29 +25,22 @@ vs. the equivalent JSON (96 bytes larger):
 
 ## Installation
 
-### Standard (filesystem extension)
-
-```sql
-\i pgtoon--0.1.sql
-```
-
 Requires PostgreSQL 12+.
 
-### As a Trusted Language Extension (pg_tle)
+The canonical source `pgtoon--0.1.sql` contains `@extschema@` markers and a
+locked `search_path`, so it is installed as a PostgreSQL **extension** (the
+markers are substituted at `CREATE EXTENSION` time). Pick the build that matches
+your environment with the `Makefile`.
+
+### As a Trusted Language Extension (pg_tle) — default
 
 For managed environments without filesystem access (e.g. Amazon RDS / Aurora),
-install via [pg_tle](https://github.com/aws/pg_tle). The `create_pgtle_scripts.sh`
-helper reads `pgtoon.control` and generates `.pgtle-pgtoon.sql`:
+build the pg_tle install script (requires [pg_tle](https://github.com/aws/pg_tle)
+in the target database):
 
 ```sh
-EXTENSION=pgtoon ./create_pgtle_scripts.sh pgtoon--0.1.sql
+make tle                 # generates .pgtle-pgtoon.sql
 psql -f .pgtle-pgtoon.sql
-```
-
-Or via the Makefile (defaults to `USE_PGTLE=1`):
-
-```sh
-make install PGDB=mydb PGUSER=postgres PGHOST=localhost PGPORT=5432
 ```
 
 Then, in the target database:
@@ -56,10 +49,24 @@ Then, in the target database:
 CREATE EXTENSION pgtoon;
 ```
 
-To install as a standard filesystem extension via PGXS instead:
+### As a filesystem extension
+
+Copy `pgtoon--0.1.sql` and `pgtoon.control` into your PostgreSQL
+`SHAREDIR/extension` directory, then:
+
+```sql
+CREATE EXTENSION pgtoon;            -- installs into the current schema
+CREATE EXTENSION pgtoon SCHEMA ext; -- or a specific schema
+```
+
+### Standalone (plain psql, no extension machinery)
+
+Generate a concrete-schema script (defaults to schema `toon`):
 
 ```sh
-make install USE_PGTLE=0
+make local                 # → pgtoon-local.sql (schema: toon)
+make local SCHEMA=myschema # → pgtoon-local.sql (schema: myschema)
+psql -f pgtoon-local.sql
 ```
 
 ## Functions
@@ -160,10 +167,17 @@ Per §11, three delimiters are supported:
 
 ## Running Tests
 
-```sql
-\i pgtoon--0.1.sql
-\i test_pgtoon.sql
+The canonical source needs `@extschema@` substitution, so test against an
+installed build. Easiest is the standalone build:
+
+```sh
+make local                 # → pgtoon-local.sql (schema: toon)
+psql -f pgtoon-local.sql
+psql -c "SET search_path = toon, pg_catalog, pg_temp" -f test_pgtoon.sql
 ```
+
+Or against a `CREATE EXTENSION` install, with the extension's schema on
+`search_path`.
 
 The test suite validates key quoting, value quoting, object encoding, tabular array encoding, null handling, NaN/Infinity normalization, and delimiter variants.
 

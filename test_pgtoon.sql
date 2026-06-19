@@ -2,7 +2,9 @@
 -- Tests conform to TOON Specification v3.3
 -- https://github.com/toon-format/spec/blob/main/SPEC.md
 --
--- Run: psql -f pgtoon--0.1.sql -f test_pgtoon.sql
+-- Run against an installed build (canonical source needs @extschema@ substitution):
+--   make local && psql -f pgtoon-local.sql
+--   psql -c "SET search_path = toon, pg_catalog, pg_temp" -f test_pgtoon.sql
 
 \set ON_ERROR_STOP on
 
