@@ -119,6 +119,12 @@ DECLARE
     rec_json json;
     lines text[];
 BEGIN
+    -- §11: only comma, pipe, and tab are legal delimiters. Fail loudly
+    -- rather than emit a document that misdescribes its own structure.
+    IF delim IS NULL OR delim NOT IN (',', '|', E'\t') THEN
+        RAISE EXCEPTION 'pgtoon: delimiter must be comma, pipe, or tab (spec §11)';
+    END IF;
+
     rec_json := row_to_json(rec);
 
     SELECT array_agg(
@@ -158,6 +164,12 @@ DECLARE
     delim_sym text;
     valtype text;
 BEGIN
+    -- §11: only comma, pipe, and tab are legal delimiters. Fail loudly
+    -- rather than emit a document that misdescribes its own structure.
+    IF delim IS NULL OR delim NOT IN (',', '|', E'\t') THEN
+        RAISE EXCEPTION 'pgtoon: delimiter must be comma, pipe, or tab (spec §11)';
+    END IF;
+
     IF val IS NULL THEN
         RETURN 'null';
     END IF;
@@ -253,6 +265,12 @@ DECLARE
     rec_json json;
     row_line text;
 BEGIN
+    -- §11: only comma, pipe, and tab are legal delimiters. Fail loudly
+    -- rather than emit a document that misdescribes its own structure.
+    IF delim IS NULL OR delim NOT IN (',', '|', E'\t') THEN
+        RAISE EXCEPTION 'pgtoon: delimiter must be comma, pipe, or tab (spec §11)';
+    END IF;
+
     rec_json := row_to_json(rec);
 
     -- First invocation: capture field names
