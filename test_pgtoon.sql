@@ -252,6 +252,55 @@ SELECT assert_toon('agg: single row',
     E'[1]{id,name}:\n  42,test');
 
 -- =============================================================================
+-- rows_to_toon — set-based tabular encoding over a record array
+-- =============================================================================
+TRUNCATE users;
+INSERT INTO users VALUES (1, 'Alice', 'admin'), (2, 'Bob', 'user');
+
+SELECT assert_toon('rows_to_toon: basic comma',
+    (SELECT rows_to_toon(array_agg(q)) FROM (SELECT id, name, role FROM users ORDER BY id) q),
+    E'[2]{id,name,role}:\n  1,Alice,admin\n  2,Bob,user');
+
+SELECT assert_toon('rows_to_toon: pipe delimiter',
+    (SELECT rows_to_toon(array_agg(q), '|') FROM (SELECT id, name FROM users ORDER BY id) q),
+    E'[2|]{id|name}:\n  1|Alice\n  2|Bob');
+
+SELECT assert_toon('rows_to_toon: identical to toon_agg',
+    (SELECT rows_to_toon(array_agg(q)) FROM (SELECT id, name, role FROM users ORDER BY id) q),
+    (SELECT toon_agg(q) FROM (SELECT id, name, role FROM users ORDER BY id) q));
+
+-- NULL records (unmatched LEFT JOIN rows) are skipped; [N] counts real rows
+SELECT assert_toon('rows_to_toon: null elements skipped',
+    rows_to_toon(ARRAY[ROW(1,'a'), NULL, ROW(2,'b')]::record[]),
+    E'[2]{f1,f2}:\n  1,a\n  2,b');
+
+SELECT assert_toon('agg: null record mid-stream skipped (2-arg)',
+    (SELECT toon_agg(u, '|') FROM (VALUES (1),(2),(3)) t(x)
+     LEFT JOIN LATERAL (SELECT t.x AS id, 'v'||t.x AS v WHERE t.x <> 2) u ON true),
+    E'[2|]{id|v}:\n  1|v1\n  3|v3');
+
+SELECT assert_toon('agg: null record first skipped (2-arg)',
+    (SELECT toon_agg(u, '|') FROM (VALUES (1),(2),(3)) t(x)
+     LEFT JOIN LATERAL (SELECT t.x AS id, 'v'||t.x AS v WHERE t.x > 1) u ON true),
+    E'[2|]{id|v}:\n  2|v2\n  3|v3');
+
+SELECT assert_toon('agg: null records skipped (1-arg)',
+    (SELECT toon_agg(u) FROM (VALUES (1),(2)) t(x)
+     LEFT JOIN (SELECT 9 AS id, 'z' AS v) u ON t.x = 1),
+    E'[1]{id,v}:\n  9,z');
+
+SELECT assert_toon('agg: all-null records is null',
+    coalesce((SELECT toon_agg(u) FROM (VALUES (1),(2)) t(x)
+              LEFT JOIN (SELECT 9 AS id WHERE false) u ON true), '(null)'),
+    '(null)');
+
+SELECT assert_toon('rows_to_toon: empty array is null',
+    coalesce((SELECT rows_to_toon(ARRAY[]::record[])), '(null)'), '(null)');
+
+SELECT assert_toon('rows_to_toon: null input is null',
+    coalesce((SELECT rows_to_toon(NULL::record[])), '(null)'), '(null)');
+
+-- =============================================================================
 -- §3: NaN/Infinity normalization in aggregates
 -- =============================================================================
 SELECT assert_toon('agg: NaN in tabular',

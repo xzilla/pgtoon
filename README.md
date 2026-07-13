@@ -118,6 +118,24 @@ Output:
   3|Carol|dev
 ```
 
+### `rows_to_toon(anyarray, delimiter text DEFAULT ',')`
+
+Encodes an array of records as a TOON tabular array (§9.3) in a single
+set-based pass. This is the engine behind `toon_agg(record)`, and the
+recommended path for **large row counts with a non-default delimiter**:
+
+```sql
+SELECT rows_to_toon(array_agg(q), '|')
+FROM (SELECT id, name FROM users ORDER BY id) q;
+```
+
+`array_agg` collects rows with a C-language transition function (linear), and
+`rows_to_toon` encodes everything in one pass. NULL elements (e.g. unmatched
+rows from a LEFT JOIN feeding `toon_agg`) are skipped — a TOON tabular row
+cannot represent a null record — and `[N]` counts only the encoded rows. The two-argument
+`toon_agg(q, '|')` form produces identical output but its transition function
+is quadratic in row count (see Performance below).
+
 ### `toon_quote_key(text)`
 
 Quotes a key per §7.3. Keys matching `^[A-Za-z_][A-Za-z0-9_.]*$` are emitted bare; others are quoted.
@@ -154,6 +172,19 @@ This implementation targets the encoder conformance checklist (§13.1):
 - **Nested objects/arrays in record fields**: values that are themselves composite types are rendered via their text representation. True recursive TOON nesting would require deeper type introspection than PL/pgSQL allows.
 - **`toon_agg` assumes tabular-eligible input**: all rows must have the same fields with primitive values. SQL query results naturally satisfy this constraint.
 - **Number canonical form**: deferred to PostgreSQL's numeric output. PG generally conforms (no leading zeros, no trailing zeros in decimal) but edge cases with very small/large floats may emit exponent notation differently than spec prefers.
+
+## Performance
+
+`toon_agg(record)` (default comma delimiter) collects rows via
+`pg_catalog.array_append` — a C transition function that PostgreSQL keeps as an
+in-place expanded array — and encodes once at finalization: **linear** in row
+count (hundreds of thousands of rows in seconds, versus tens of minutes before).
+
+`toon_agg(record, delimiter)` needs a custom transition function to carry the
+delimiter, and PostgreSQL flattens and re-expands SQL/plpgsql transition state
+on every call, which is inherently **quadratic**. It is fine for hundreds or a
+few thousands of rows; beyond that, use `rows_to_toon(array_agg(q), '|')`,
+which is linear and produces identical output.
 
 ## Delimiter Support
 
