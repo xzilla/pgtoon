@@ -19,7 +19,8 @@ designed for LLM prompt contexts. It conforms to TOON Specification v3.3.
 pgtoon--0.1.sql          # Canonical extension source (contains @extschema@ markers)
 pgtoon.control           # PostgreSQL extension metadata (relocatable=false)
 test_pgtoon.sql          # Regression suite (67 assertions)
-Makefile                 # Build targets: tle (default), local, clean, help
+Makefile                 # Build: tle (default), local, install; test-*; clean, help
+.github/workflows/test.yml  # CI: all three install paths on PG 14-18
 create_pgtle_scripts.sh  # Vendored pg_tle helper (from github.com/aws/pg_tle)
 README.md                # User-facing documentation
 AGENTS.md                # This file
@@ -90,7 +91,12 @@ cause a parse error. Always use one of the three paths above.
 ### Running tests
 
 ```sh
-# Against a standalone install:
+# Make targets (recreate $TESTDB, fail non-zero on any assertion failure):
+make test              # standalone build
+make test-tle          # pg_tle install; run BEFORE make install
+make install && make test-extension
+
+# Or by hand, against a standalone install:
 make local
 psql -f pgtoon-local.sql
 psql -c "SET search_path = toon, pg_catalog, pg_temp" -f test_pgtoon.sql
@@ -104,7 +110,8 @@ psql -f test_pgtoon.sql  # functions are in public by default
 
 Tests use a temp table + `assert_toon(name, actual, expected)` helper.
 Output is a summary row: `passed | failed | total`. Any failures also print
-the test name with expected vs actual values via `RAISE NOTICE`.
+the test name with expected vs actual values via `RAISE NOTICE`, and a final
+`DO` block raises an exception so psql exits non-zero (this is what CI keys on).
 
 ### Test requirements
 
@@ -139,8 +146,9 @@ Imperative mood, max 50-char subject. Body explains what/why.
 
 ### Before committing
 
-- Run `make local && psql -f pgtoon-local.sql && psql -f test_pgtoon.sql` (all tests pass)
-- Ideally test `make tle` + `CREATE EXTENSION` on a real pg_tle install
+- Run `make test` (all tests pass)
+- Ideally also `make test-tle` and `make install && make test-extension`;
+  CI runs all three on PostgreSQL 14–18 for every push and PR
 
 ## TOON Spec Quick Reference (for encoders)
 
