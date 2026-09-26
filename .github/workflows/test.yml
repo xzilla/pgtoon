@@ -53,7 +53,8 @@ jobs:
         run: |
           sudo pg_createcluster ${{ matrix.pg }} ci -p "$PGPORT" --start \
             -o shared_preload_libraries=pg_tle
-          sudo -u postgres createuser -s "$USER"
+          # sudo resets the environment, so PGPORT has to be passed explicitly.
+          sudo -u postgres createuser -p "$PGPORT" -s "$USER"
 
       # pg_tle refuses to register an extension that also exists on the
       # filesystem, so run it before `make install`.
