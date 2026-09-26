@@ -25,7 +25,7 @@ vs. the equivalent JSON (96 bytes larger):
 
 ## Installation
 
-Requires PostgreSQL 12+.
+Requires PostgreSQL 14+.
 
 The canonical source `pgtoon--0.1.sql` contains `@extschema@` markers and a
 locked `search_path`, so it is installed as a PostgreSQL **extension** (the
