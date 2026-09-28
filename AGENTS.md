@@ -19,7 +19,8 @@ designed for LLM prompt contexts. It conforms to TOON Specification v3.3.
 pgtoon--0.1.sql          # Canonical extension source (contains @extschema@ markers)
 pgtoon.control           # PostgreSQL extension metadata (relocatable=false)
 test_pgtoon.sql          # Regression suite (67 assertions)
-Makefile                 # Build targets: tle (default), local, clean, help
+Makefile                 # Build: tle (default), local, install; test-*; clean, help
+.github/workflows/test.yml  # CI: all three install paths on PG 14-18
 create_pgtle_scripts.sh  # Vendored pg_tle helper (from github.com/aws/pg_tle)
 README.md                # User-facing documentation
 AGENTS.md                # This file
@@ -32,7 +33,7 @@ AGENTS.md                # This file
 | Function | Purpose |
 |----------|---------|
 | `to_toon(anyelement, delim)` | Generic encoder: scalars, arrays, records → TOON |
-| `row_to_toon(record, delim)` | Record → TOON object (`key: value` lines) |
+| `row_to_toon(anyelement, delim)` | Record → TOON object (`key: value` lines) |
 | `toon_agg(anyelement [, delim])` | Aggregate → TOON tabular array with header + rows |
 
 ### Internal helpers (not intended for direct use)
@@ -43,6 +44,9 @@ AGENTS.md                # This file
 | `toon_quote_key(text)` | §7.3 key quoting |
 | `toon_quote_value(text, delim)` | §7.2 value quoting |
 | `toon_encode_field(raw_json, text_val, delim)` | Type-aware field encoding |
+| `toon_agg_sfunc(state, rec, delim)` | `toon_agg` state transition |
+| `toon_agg_sfunc_default(state, rec)` | State transition for the 1-arg `toon_agg` (comma delimiter) |
+| `toon_agg_ffunc(state)` | `toon_agg` final function (header + rows) |
 
 ### Type
 
@@ -60,6 +64,17 @@ AGENTS.md                # This file
 - **NaN/Infinity detection**: uses `pg_typeof(val)` to distinguish float NaN
   (→ null per §3) from the string literal "NaN" (→ normal string). PG wraps
   float NaN as a JSON string `"NaN"`, making them otherwise indistinguishable.
+
+## Supported Versions
+
+PostgreSQL 14 and newer. Versions 12 and 13 are past upstream end-of-life and
+are not tested; don't add workarounds for them. When a new PostgreSQL major is
+released, add it to the matrix in `.github/workflows/test.yml`; when one goes
+EOL, drop it from the matrix and bump the floor here and in README.md.
+
+CI builds pg_tle from a pinned commit (`PG_TLE_REF` in the workflow) because
+no tagged pg_tle release supports PG 18 yet. Switch to a release tag once one
+does.
 
 ## Security Model
 
@@ -90,7 +105,12 @@ cause a parse error. Always use one of the three paths above.
 ### Running tests
 
 ```sh
-# Against a standalone install:
+# Make targets (recreate $TESTDB, fail non-zero on any assertion failure):
+make test              # standalone build
+make test-tle          # pg_tle install; run BEFORE make install
+make install && make test-extension
+
+# Or by hand, against a standalone install:
 make local
 psql -f pgtoon-local.sql
 psql -c "SET search_path = toon, pg_catalog, pg_temp" -f test_pgtoon.sql
@@ -104,11 +124,12 @@ psql -f test_pgtoon.sql  # functions are in public by default
 
 Tests use a temp table + `assert_toon(name, actual, expected)` helper.
 Output is a summary row: `passed | failed | total`. Any failures also print
-the test name with expected vs actual values via `RAISE NOTICE`.
+the test name with expected vs actual values via `RAISE NOTICE`, and a final
+`DO` block raises an exception so psql exits non-zero (this is what CI keys on).
 
 ### Test requirements
 
-- PostgreSQL 12+ (tested on 16 and 18)
+- PostgreSQL 14+ (the supported floor; CI runs 14, 15, 16, 17 and 18)
 - The extension must be installed before running tests
 - Tests are self-contained (CREATE/DROP their own temp tables)
 
@@ -134,13 +155,14 @@ Imperative mood, max 50-char subject. Body explains what/why.
 2. Add `SET search_path = pg_catalog, pg_temp`
 3. Qualify any calls to other pgtoon functions with `@extschema@.`
 4. Add tests in `test_pgtoon.sql`
-5. Verify all three install paths work (`make tle`, `make local`, filesystem)
-6. Run the regression suite: expect 0 failures
+5. Run the suite on all three install paths: `make test`, `make test-tle`,
+   `make install && make test-extension` — expect 0 failures
 
 ### Before committing
 
-- Run `make local && psql -f pgtoon-local.sql && psql -f test_pgtoon.sql` (all tests pass)
-- Ideally test `make tle` + `CREATE EXTENSION` on a real pg_tle install
+- Run `make test` (all tests pass)
+- Ideally also `make test-tle` and `make install && make test-extension`;
+  CI runs all three on PostgreSQL 14–18 for every push and PR
 
 ## TOON Spec Quick Reference (for encoders)
 

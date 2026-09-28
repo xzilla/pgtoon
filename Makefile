@@ -9,7 +9,13 @@ SRC         = $(EXTENSION)--$(EXTVERSION).sql
 # Schema used by `make local` (the standalone, non-extension build).
 SCHEMA     ?= toon
 
-.PHONY: tle local clean help
+PG_CONFIG  ?= pg_config
+PSQL       ?= psql -X -v ON_ERROR_STOP=1
+# Scratch database used by the test targets; dropped and recreated each run.
+TESTDB     ?= pgtoon_test
+EXTDIR      = $(shell $(PG_CONFIG) --sharedir)/extension
+
+.PHONY: tle local install uninstall test test-local test-extension test-tle clean help
 
 # Default target: build the pg_tle installable script.
 tle: .pgtle-$(EXTENSION).sql
@@ -33,6 +39,42 @@ $(EXTENSION)-local.sql: $(SRC)
 	   sed 's/@extschema@/$(SCHEMA)/g' $(SRC) ) > $@
 	@echo "Built $@ — load with: psql -f $@"
 
+# Install the control file and SQL script for `CREATE EXTENSION pgtoon`.
+install:
+	install -d '$(DESTDIR)$(EXTDIR)'
+	install -m 644 $(EXTENSION).control $(SRC) '$(DESTDIR)$(EXTDIR)/'
+
+uninstall:
+	rm -f '$(DESTDIR)$(EXTDIR)/$(EXTENSION).control' '$(DESTDIR)$(EXTDIR)/$(SRC)'
+
+# Test targets connect using the standard libpq env vars (PGHOST, PGUSER, ...).
+# Each one recreates $(TESTDB) and runs test_pgtoon.sql against one install path.
+define fresh_testdb
+	$(PSQL) -d postgres -c 'DROP DATABASE IF EXISTS $(TESTDB)' -c 'CREATE DATABASE $(TESTDB)'
+endef
+
+test: test-local
+
+# Standalone build (sed-substituted schema).
+test-local: local
+	$(fresh_testdb)
+	$(PSQL) -d $(TESTDB) -f $(EXTENSION)-local.sql
+	$(PSQL) -d $(TESTDB) -c 'SET search_path = $(SCHEMA), pg_catalog, pg_temp' -f test_pgtoon.sql
+
+# Filesystem extension (requires `make install`), default and explicit schema.
+test-extension:
+	$(fresh_testdb)
+	$(PSQL) -d $(TESTDB) -c 'CREATE EXTENSION $(EXTENSION)' -f test_pgtoon.sql
+	$(fresh_testdb)
+	$(PSQL) -d $(TESTDB) -c 'CREATE SCHEMA ext' -c 'CREATE EXTENSION $(EXTENSION) SCHEMA ext' \
+		-c 'SET search_path = ext, public' -f test_pgtoon.sql
+
+# pg_tle install (requires pg_tle in shared_preload_libraries).
+test-tle: tle
+	$(fresh_testdb)
+	$(PSQL) -d $(TESTDB) -f .pgtle-$(EXTENSION).sql
+	$(PSQL) -d $(TESTDB) -c 'CREATE EXTENSION $(EXTENSION)' -f test_pgtoon.sql
+
 clean:
 	rm -f .pgtle-$(EXTENSION).sql $(EXTENSION)-local.sql
 
@@ -40,4 +82,8 @@ help:
 	@echo "Targets:"
 	@echo "  make tle     - build pg_tle install script (.pgtle-$(EXTENSION).sql) [default]"
 	@echo "  make local   - build standalone script ($(EXTENSION)-local.sql), SCHEMA=$(SCHEMA)"
+	@echo "  make install - install control + SQL into \`$(PG_CONFIG) --sharedir\`/extension"
+	@echo "  make test    - run the suite against a standalone build (alias: test-local)"
+	@echo "  make test-extension - run the suite via CREATE EXTENSION (needs make install)"
+	@echo "  make test-tle       - run the suite via pg_tle (needs pg_tle preloaded)"
 	@echo "  make clean   - remove generated files"
