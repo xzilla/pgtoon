@@ -25,7 +25,7 @@ vs. the equivalent JSON (96 bytes larger):
 
 ## Installation
 
-Requires PostgreSQL 12+.
+Requires PostgreSQL 14+.
 
 The canonical source `pgtoon--0.1.sql` contains `@extschema@` markers and a
 locked `search_path`, so it is installed as a PostgreSQL **extension** (the
@@ -178,6 +178,23 @@ psql -c "SET search_path = toon, pg_catalog, pg_temp" -f test_pgtoon.sql
 
 Or against a `CREATE EXTENSION` install, with the extension's schema on
 `search_path`.
+
+The Makefile wraps each install path in a test target. Each one recreates a
+scratch database (`TESTDB`, default `pgtoon_test`), connects using the usual
+libpq environment variables (`PGHOST`, `PGPORT`, `PGUSER`), and exits non-zero
+if any assertion fails:
+
+```sh
+make test              # standalone build (alias for test-local)
+make test-tle          # via pg_tle (pg_tle must be in shared_preload_libraries)
+make install           # copy control + SQL into `pg_config --sharedir`/extension
+make test-extension    # via CREATE EXTENSION, default schema and SCHEMA ext
+```
+
+`test-tle` fails if a filesystem copy is installed (pg_tle won't register an
+extension that already exists on disk), so run it before `make install`.
+
+CI (`.github/workflows/test.yml`) runs all three on PostgreSQL 14–18.
 
 The test suite validates key quoting, value quoting, object encoding, tabular array encoding, null handling, NaN/Infinity normalization, and delimiter variants.
 

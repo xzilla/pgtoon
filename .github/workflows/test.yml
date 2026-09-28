@@ -1,0 +1,74 @@
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: PostgreSQL ${{ matrix.pg }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [14, 15, 16, 17, 18]
+    env:
+      PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+      # Pinned pg_tle commit (main, supports PG 12-18; no tagged release yet
+      # covers 18).
+      PG_TLE_REF: 2f4b7b34ac3e65a4c4ec358765839d5f24a910bd
+      PGHOST: /var/run/postgresql
+      PGPORT: 5499
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL ${{ matrix.pg }}
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          # Don't let the package auto-create a "main" cluster; we make our own.
+          echo 'create_main_cluster = false' | sudo tee -a /etc/postgresql-common/createcluster.conf
+          sudo apt-get install -y --no-install-recommends \
+            postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} \
+            flex bison libkrb5-dev
+
+      - name: Build and install pg_tle
+        run: |
+          git init -q pg_tle
+          git -C pg_tle fetch -q --depth 1 https://github.com/aws/pg_tle "$PG_TLE_REF"
+          git -C pg_tle checkout -q FETCH_HEAD
+          make -C pg_tle PG_CONFIG="$PG_CONFIG"
+          sudo make -C pg_tle install PG_CONFIG="$PG_CONFIG"
+
+      - name: Start cluster
+        run: |
+          sudo pg_createcluster ${{ matrix.pg }} ci -p "$PGPORT" --start \
+            -o shared_preload_libraries=pg_tle
+          # sudo resets the environment, so PGPORT has to be passed explicitly.
+          sudo -u postgres createuser -p "$PGPORT" -s "$USER"
+
+      # pg_tle refuses to register an extension that also exists on the
+      # filesystem, so run it before `make install`.
+      - name: Test standalone build
+        run: make test-local
+
+      - name: Test pg_tle install
+        run: make test-tle
+
+      - name: Test filesystem extension
+        run: |
+          sudo make install PG_CONFIG="$PG_CONFIG"
+          make test-extension
+
+      - name: Server log
+        if: failure()
+        run: sudo cat /var/log/postgresql/postgresql-${{ matrix.pg }}-ci.log
