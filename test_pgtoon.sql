@@ -21,7 +21,7 @@ CREATE TEMP TABLE test_results (
 CREATE OR REPLACE FUNCTION assert_toon(test_name text, actual text, expected text)
 RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO test_results VALUES (test_name, actual = expected, expected, actual);
+    INSERT INTO test_results VALUES (test_name, actual IS NOT DISTINCT FROM expected, expected, actual);
     IF actual IS DISTINCT FROM expected THEN
         RAISE NOTICE 'FAIL: % — expected [%], got [%]', test_name, expected, actual;
     END IF;
@@ -385,6 +385,18 @@ SELECT test_name, expected, actual
 FROM test_results
 WHERE NOT passed
 ORDER BY test_name;
+
+-- Fail the run (non-zero psql exit under ON_ERROR_STOP) if any assertion failed
+DO $$
+DECLARE
+    n_failed int;
+BEGIN
+    SELECT count(*) INTO n_failed FROM test_results WHERE NOT passed;
+    IF n_failed > 0 THEN
+        RAISE EXCEPTION '% test(s) failed', n_failed;
+    END IF;
+END;
+$$;
 
 -- Cleanup
 DROP TABLE test_results;
