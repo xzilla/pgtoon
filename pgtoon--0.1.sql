@@ -238,6 +238,106 @@ END;
 $$;
 
 -- =============================================================================
+-- rows_to_toon(anyarray, delimiter) — Encode an array of records as a TOON
+-- tabular array (§9.3) in a single set-based pass.
+--
+-- This is the linear-time workhorse behind toon_agg(anyelement), and the
+-- recommended path for large row counts with a non-default delimiter:
+--
+--     SELECT rows_to_toon(array_agg(q), '|') FROM (...) q;
+--
+-- array_agg uses a C-language transition function with internal state, so
+-- collection is O(n); this function then encodes all rows in one pass.
+-- =============================================================================
+-- Scalar validation helpers (plpgsql cannot accept record[], so rows_to_toon
+-- itself must be LANGUAGE sql; these carry the RAISE logic on scalars).
+CREATE FUNCTION toon_delim_ok(delim text)
+RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+    IF delim IS NULL OR delim NOT IN (',', '|', E'\t') THEN
+        RAISE EXCEPTION 'pgtoon: delimiter must be comma, pipe, or tab (spec §11)';
+    END IF;
+    RETURN true;
+END;
+$$;
+
+CREATE FUNCTION toon_rows_ok(ndims int, bad int)
+RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+    IF ndims <> 1 THEN
+        RAISE EXCEPTION 'pgtoon: rows_to_toon requires a one-dimensional array';
+    END IF;
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'pgtoon: rows_to_toon requires an array of records (got % non-record element(s))', bad;
+    END IF;
+    RETURN true;
+END;
+$$;
+
+-- LANGUAGE sql on purpose: SQL functions accept record[] (anonymous row types
+-- from subqueries), which plpgsql rejects at compile time.
+--
+-- NULL elements (e.g. unmatched rows from a LEFT JOIN feeding toon_agg) are
+-- SKIPPED — a TOON tabular row cannot represent a null record, and the [N]
+-- count reflects only the encoded rows. Non-record elements raise.
+--
+-- STABLE, not IMMUTABLE: output flows through array_to_json, whose rendering
+-- of timestamps/floats depends on session GUCs.
+--
+-- Implementation note: the array is serialized ONCE via array_to_json and
+-- iterated with json_array_elements. Never subscript a large flat array in a
+-- loop (rows[i]): element access in a flat varlena array is O(i), which turns
+-- a full pass into O(n²). (Expanded arrays don't have that problem, but a
+-- caller-supplied array_agg result arrives flat.)
+CREATE FUNCTION rows_to_toon(rows anyarray, delim text DEFAULT ',')
+RETURNS text
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
+    WITH elems AS (
+        SELECT a.elem, a.ord, json_typeof(a.elem) AS jt
+        FROM json_array_elements(array_to_json(rows)) WITH ORDINALITY AS a(elem, ord)
+    ),
+    enc AS (
+        SELECT ord, jt,
+               CASE WHEN jt = 'object' THEN
+                   (SELECT string_agg(@extschema@.toon_encode_field(e.value::text, t.value, delim),
+                                      delim ORDER BY e.ordinality)
+                    FROM json_each(elem) WITH ORDINALITY AS e
+                    JOIN json_each_text(elem) WITH ORDINALITY AS t
+                        ON e.ordinality = t.ordinality)
+               END AS line
+        FROM elems
+    )
+    SELECT CASE
+        WHEN NOT @extschema@.toon_delim_ok(delim) THEN NULL
+        WHEN rows IS NULL OR cardinality(rows) = 0 THEN NULL
+        WHEN NOT @extschema@.toon_rows_ok(array_ndims(rows),
+                 count(*) FILTER (WHERE jt NOT IN ('object', 'null'))::int) THEN NULL
+        -- all elements NULL (e.g. every LEFT JOIN row unmatched) → NULL,
+        -- matching an aggregate over zero rows
+        WHEN count(*) FILTER (WHERE jt = 'object') = 0 THEN NULL
+        ELSE
+            -- §6/§9.3: [N<delim?>]{fields}: — comma has no symbol; pipe and
+            -- tab are their own symbols. Rows at depth +1; no trailing newline.
+            -- N counts encoded rows only (NULL records are skipped).
+            '[' || count(*) FILTER (WHERE jt = 'object')
+                || CASE WHEN delim = ',' THEN '' ELSE delim END || ']{'
+            || (SELECT string_agg(@extschema@.toon_quote_key(key), delim ORDER BY ordinality)
+                FROM json_each((SELECT elem FROM elems WHERE jt = 'object' ORDER BY ord LIMIT 1)) WITH ORDINALITY)
+            || '}:' || E'\n  '
+            || string_agg(line, E'\n  ' ORDER BY ord)
+    END
+    FROM enc
+$$;
+
+-- =============================================================================
 -- toon_agg — Aggregate records into a TOON tabular array (§9.3)
 --
 -- Output format:
@@ -249,15 +349,39 @@ $$;
 -- This aggregate assumes uniform input (as row sources from SQL naturally are).
 -- =============================================================================
 
--- State type to accumulate header + rows
-CREATE TYPE toon_agg_state AS (
-    fields text,
-    rows text[],
-    delim text
+-- The default-delimiter aggregate collects rows with pg_catalog.array_append —
+-- a C transition function, which is the only kind PostgreSQL keeps O(1) per
+-- row (the executor keeps the state as a read-write expanded array in place).
+-- Any SQL or plpgsql transition function is flattened/re-expanded at every
+-- call, making accumulation O(n²) regardless of what the function body does
+-- (measured: 39 s for a 40k-row aggregate; this shape takes ~1 s, issue #4).
+-- All encoding happens once, in the finalizer, via rows_to_toon.
+
+CREATE FUNCTION toon_agg_rows_ffunc(state anycompatiblearray)
+RETURNS text
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT @extschema@.rows_to_toon(state, ',')
+$$;
+
+CREATE AGGREGATE toon_agg(anycompatible) (
+    SFUNC = pg_catalog.array_append,
+    STYPE = anycompatiblearray,
+    FINALFUNC = @extschema@.toon_agg_rows_ffunc,
+    INITCOND = '{}'
 );
 
-CREATE FUNCTION toon_agg_sfunc(state @extschema@.toon_agg_state, rec anyelement, delim text DEFAULT ',')
-RETURNS @extschema@.toon_agg_state
+-- Explicit-delimiter variant. array_append cannot carry the extra delimiter
+-- argument, so this keeps a plpgsql transition function: per-row encoding
+-- into a text[] state (state[1] = field header, state[2] = delimiter,
+-- state[3..] = encoded rows). The transition-boundary copying makes it
+-- quadratic in row count; for large sets prefer
+--     rows_to_toon(array_agg(q), '|')
+-- which collects in C and encodes in one pass.
+
+CREATE FUNCTION toon_agg_sfunc(state text[], rec anyelement, delim text DEFAULT ',')
+RETURNS text[]
 LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
@@ -271,15 +395,19 @@ BEGIN
         RAISE EXCEPTION 'pgtoon: delimiter must be comma, pipe, or tab (spec §11)';
     END IF;
 
+    -- Skip NULL records (e.g. unmatched LEFT JOIN rows): a TOON tabular row
+    -- cannot represent a null record, and [N] must describe the actual rows.
+    IF rec IS NULL THEN
+        RETURN state;
+    END IF;
+
     rec_json := row_to_json(rec);
 
-    -- First invocation: capture field names
-    IF state.fields IS NULL THEN
-        SELECT string_agg(@extschema@.toon_quote_key(key), delim ORDER BY ordinality)
-        INTO state.fields
+    -- First invocation: capture field names and delimiter
+    IF state IS NULL OR cardinality(state) = 0 THEN
+        SELECT ARRAY[string_agg(@extschema@.toon_quote_key(key), delim ORDER BY ordinality), delim]
+        INTO state
         FROM json_each(rec_json) WITH ORDINALITY;
-        state.delim := delim;
-        state.rows := ARRAY[]::text[];
     END IF;
 
     -- Build row: encode each value with delimiter-aware quoting
@@ -292,71 +420,43 @@ BEGIN
     JOIN json_each_text(rec_json) WITH ORDINALITY AS t
         ON e.ordinality = t.ordinality;
 
-    state.rows := state.rows || row_line;
+    state := state || row_line;
     RETURN state;
 END;
 $$;
 
-CREATE FUNCTION toon_agg_ffunc(state @extschema@.toon_agg_state)
+CREATE FUNCTION toon_agg_ffunc(state text[])
 RETURNS text
 LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     n int;
-    header text;
-    indent text := '  ';  -- §12: default indentSize = 2
-    result text;
     delim_sym text;
 BEGIN
-    IF state.fields IS NULL THEN
+    IF cardinality(state) = 0 OR state[1] IS NULL THEN
         RETURN NULL;
     END IF;
 
-    n := array_length(state.rows, 1);
+    n := cardinality(state) - 2;
 
     -- §6: delimiter symbol in bracket segment
-    -- comma = no symbol, pipe = |, tab = literal tab
     delim_sym := CASE
-        WHEN state.delim = ',' THEN ''
-        WHEN state.delim = '|' THEN '|'
-        WHEN state.delim = E'\t' THEN E'\t'
+        WHEN state[2] = ',' THEN ''
+        WHEN state[2] = '|' THEN '|'
+        WHEN state[2] = E'\t' THEN E'\t'
         ELSE ''
     END;
 
-    -- §6/§9.3: [N<delim?>]{fields}:
-    header := '[' || n || delim_sym || ']{' || state.fields || '}:';
-
-    -- §9.3: rows at depth +1 (indented)
-    result := header;
-    FOR i IN 1..n LOOP
-        result := result || E'\n' || indent || state.rows[i];
-    END LOOP;
-
-    -- §12: no trailing newline
-    RETURN result;
+    -- §6/§9.3: [N<delim?>]{fields}: with rows at depth +1, no trailing newline
+    RETURN '[' || n || delim_sym || ']{' || state[1] || '}:'
+        || E'\n  ' || array_to_string(state[3:], E'\n  ');
 END;
 $$;
 
 CREATE AGGREGATE toon_agg(anyelement, text) (
     SFUNC = @extschema@.toon_agg_sfunc,
-    STYPE = @extschema@.toon_agg_state,
+    STYPE = text[],
     FINALFUNC = @extschema@.toon_agg_ffunc,
-    INITCOND = '(,,)'
-);
-
--- Convenience overload with default comma delimiter
-CREATE FUNCTION toon_agg_sfunc_default(state @extschema@.toon_agg_state, rec anyelement)
-RETURNS @extschema@.toon_agg_state
-LANGUAGE sql STABLE
-SET search_path = pg_catalog, pg_temp
-AS $$
-    SELECT @extschema@.toon_agg_sfunc(state, rec, ',')
-$$;
-
-CREATE AGGREGATE toon_agg(anyelement) (
-    SFUNC = @extschema@.toon_agg_sfunc_default,
-    STYPE = @extschema@.toon_agg_state,
-    FINALFUNC = @extschema@.toon_agg_ffunc,
-    INITCOND = '(,,)'
+    INITCOND = '{}'
 );

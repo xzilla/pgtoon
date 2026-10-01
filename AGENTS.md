@@ -35,6 +35,7 @@ AGENTS.md                # This file
 | `to_toon(anyelement, delim)` | Generic encoder: scalars, arrays, records → TOON |
 | `row_to_toon(anyelement, delim)` | Record → TOON object (`key: value` lines) |
 | `toon_agg(anyelement [, delim])` | Aggregate → TOON tabular array with header + rows |
+| `rows_to_toon(anyarray [, delim])` | Record array → TOON tabular array, single set-based pass (linear) |
 
 ### Internal helpers (not intended for direct use)
 
@@ -44,15 +45,31 @@ AGENTS.md                # This file
 | `toon_quote_key(text)` | §7.3 key quoting |
 | `toon_quote_value(text, delim)` | §7.2 value quoting |
 | `toon_encode_field(raw_json, text_val, delim)` | Type-aware field encoding |
-| `toon_agg_sfunc(state, rec, delim)` | `toon_agg` state transition |
-| `toon_agg_sfunc_default(state, rec)` | State transition for the 1-arg `toon_agg` (comma delimiter) |
-| `toon_agg_ffunc(state)` | `toon_agg` final function (header + rows) |
+| `toon_agg_sfunc(text[], rec, delim)` | Transition for the 2-arg `toon_agg` (validates delimiter, skips NULL records) |
+| `toon_agg_ffunc(text[])` | Final function for the 2-arg `toon_agg` (header + rows) |
+| `toon_agg_rows_ffunc(anycompatiblearray)` | Finalizer for default toon_agg → rows_to_toon(state, ',') |
+| `toon_delim_ok(text)` / `toon_rows_ok(int, int)` | Scalar validation helpers (RAISE lives here; plpgsql cannot accept record[]) |
 
-### Type
+### Aggregate state & performance rules (issue #4)
 
-| Type | Purpose |
-|------|---------|
-| `toon_agg_state` | Composite type holding aggregate state (fields, rows[], delim) |
+Two hard-won rules, both measured on PG 16:
+
+1. **Only a C transition function is linear.** PostgreSQL flattens and
+   re-expands SQL/plpgsql transition state on *every* call, so any custom
+   transition accumulating an array is O(n²) no matter what its body does.
+   The default `toon_agg(anycompatible)` therefore uses
+   `pg_catalog.array_append` (STYPE `anycompatiblearray`, INITCOND `'{}'`)
+   and defers all encoding to the finalizer via `rows_to_toon`. The two-arg
+   variant cannot use `array_append` (no third argument), so it keeps a
+   plpgsql transition with `text[]` state (`state[1]` = header, `state[2]` =
+   delimiter, `state[3..]` = encoded rows) and stays quadratic — documented,
+   with `rows_to_toon(array_agg(...), delim)` as the linear escape hatch.
+
+2. **Never subscript a large flat array in a loop.** Flat varlena arrays have
+   O(i) element access, so `rows[i]` over all i is O(n²). `rows_to_toon`
+   serializes the array once with `array_to_json` and iterates
+   `json_array_elements`. (Expanded arrays — like the finalizer's state —
+   have O(1) access, but caller-supplied `array_agg` results arrive flat.)
 
 ### Design Decisions
 
