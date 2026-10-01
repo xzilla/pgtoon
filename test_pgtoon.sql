@@ -259,6 +259,37 @@ SELECT assert_toon('agg: NaN in tabular',
     E'[1]{val,label}:\n  null,x');
 
 -- =============================================================================
+-- Known limitation (issue #3): a text value 'NaN'/'Infinity'/'-Infinity' in a
+-- record is indistinguishable from a float NaN in row_to_json output, and is
+-- encoded as null (data loss). These tests PIN the documented behavior so any
+-- future change to it is deliberate. The scalar path (to_toon) is correct and
+-- is asserted below.
+-- =============================================================================
+SELECT assert_toon('LIMITATION row: text NaN encodes as null',
+    row_to_toon(q), E'note: null')
+FROM (SELECT 'NaN'::text AS note) q;
+
+SELECT assert_toon('LIMITATION row: text Infinity encodes as null',
+    row_to_toon(q), E'note: null')
+FROM (SELECT 'Infinity'::text AS note) q;
+
+SELECT assert_toon('LIMITATION agg: text -Infinity encodes as null',
+    (SELECT toon_agg(q) FROM (SELECT '-Infinity'::text AS note) q),
+    E'[1]{note}:\n  null');
+
+SELECT assert_toon('LIMITATION array: text NaN element encodes as null',
+    to_toon(ARRAY['NaN','x']), '[2]: null,x');
+
+-- Near-misses must NOT be swallowed
+SELECT assert_toon('row: text nan (lowercase) is a normal string',
+    row_to_toon(q), E'note: nan')
+FROM (SELECT 'nan'::text AS note) q;
+
+SELECT assert_toon('row: NaN-with-suffix is a normal string',
+    row_to_toon(q), E'note: NaN!')
+FROM (SELECT 'NaN!'::text AS note) q;
+
+-- =============================================================================
 -- to_toon — generic value encoding
 -- =============================================================================
 

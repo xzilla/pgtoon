@@ -187,6 +187,14 @@ Key rules from the spec that affect implementation decisions:
 
 ## Known Limitations
 
+- **Text values `NaN`/`Infinity`/`-Infinity` in records and arrays**: encoded
+  as `null` by `row_to_toon`, `toon_agg`, and the array path of `to_toon`
+  (data loss). On those paths the encoder sees only `row_to_json`/JSON output, and PostgreSQL emits a float NaN and the *string*
+  `"NaN"` identically (`{"f1":"NaN"}`), so the two are indistinguishable; the
+  ambiguity is resolved toward §3's float rule (NaN → `null`). The scalar
+  `to_toon('NaN'::text)` path has `pg_typeof` available and correctly returns
+  the string. Workaround: cast such columns explicitly, e.g. `'x' || col`, or
+  pre-quote them.
 - **Nested objects/arrays in record fields**: rendered as quoted text representation,
   not as indented TOON nesting. PL/pgSQL lacks the type introspection needed.
 - **Multi-dimensional arrays**: flattened to quoted string, not §9.2 expanded list.

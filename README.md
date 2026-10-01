@@ -150,6 +150,14 @@ This implementation targets the encoder conformance checklist (§13.1):
 
 ### Known Limitations
 
+- **Text values `NaN`/`Infinity`/`-Infinity` in records and arrays**: encoded
+  as `null` by `row_to_toon`, `toon_agg`, and the array path of `to_toon`
+  (data loss). On those paths the encoder sees only `row_to_json`/JSON output, and PostgreSQL emits a float NaN and the *string*
+  `"NaN"` identically (`{"f1":"NaN"}`), so the two are indistinguishable; the
+  ambiguity is resolved toward §3's float rule (NaN → `null`). The scalar
+  `to_toon('NaN'::text)` path has `pg_typeof` available and correctly returns
+  the string. Workaround: cast such columns explicitly, e.g. `'x' || col`, or
+  pre-quote them.
 - **U+0000–U+001F control chars** (other than `\n`, `\r`, `\t`): should emit `\uXXXX` but PG text fields rarely contain these. Not yet implemented.
 - **Nested objects/arrays in record fields**: values that are themselves composite types are rendered via their text representation. True recursive TOON nesting would require deeper type introspection than PL/pgSQL allows.
 - **`toon_agg` assumes tabular-eligible input**: all rows must have the same fields with primitive values. SQL query results naturally satisfy this constraint.
