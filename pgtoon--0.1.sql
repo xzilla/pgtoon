@@ -112,7 +112,7 @@ $$;
 -- =============================================================================
 CREATE FUNCTION row_to_toon(rec anyelement, delim text DEFAULT ',')
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
@@ -153,7 +153,7 @@ $$;
 -- =============================================================================
 CREATE FUNCTION to_toon(val anyelement, delim text DEFAULT ',')
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
@@ -258,7 +258,7 @@ CREATE TYPE toon_agg_state AS (
 
 CREATE FUNCTION toon_agg_sfunc(state @extschema@.toon_agg_state, rec anyelement, delim text DEFAULT ',')
 RETURNS @extschema@.toon_agg_state
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
@@ -299,7 +299,7 @@ $$;
 
 CREATE FUNCTION toon_agg_ffunc(state @extschema@.toon_agg_state)
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
@@ -348,7 +348,7 @@ CREATE AGGREGATE toon_agg(anyelement, text) (
 -- Convenience overload with default comma delimiter
 CREATE FUNCTION toon_agg_sfunc_default(state @extschema@.toon_agg_state, rec anyelement)
 RETURNS @extschema@.toon_agg_state
-LANGUAGE sql IMMUTABLE
+LANGUAGE sql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
     SELECT @extschema@.toon_agg_sfunc(state, rec, ',')

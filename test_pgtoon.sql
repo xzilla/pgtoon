@@ -373,6 +373,24 @@ SELECT assert_toon('delim: tab still legal',
   1	a');
 
 -- =============================================================================
+-- Volatility: wrappers over to_json/row_to_json must be STABLE (GUC-dependent),
+-- pure string helpers stay IMMUTABLE. Guards against wrong-result expression
+-- indexes (see issue #2).
+-- =============================================================================
+SELECT assert_toon('volatility: STABLE wrappers, IMMUTABLE helpers',
+    (SELECT string_agg(p.proname || '=' || p.provolatile::text, ',' ORDER BY p.proname)
+     FROM pg_proc p
+     JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = (current_schemas(false))[1]
+       AND p.prokind = 'f'
+       AND p.proname IN ('row_to_toon', 'to_toon', 'toon_agg_ffunc',
+                         'toon_agg_sfunc', 'toon_agg_sfunc_default',
+                         'toon_encode_field', 'toon_escape',
+                         'toon_quote_key', 'toon_quote_value')),
+    'row_to_toon=s,to_toon=s,toon_agg_ffunc=s,toon_agg_sfunc=s,toon_agg_sfunc_default=s,'
+    || 'toon_encode_field=i,toon_escape=i,toon_quote_key=i,toon_quote_value=i');
+
+-- =============================================================================
 -- Report results
 -- =============================================================================
 SELECT
