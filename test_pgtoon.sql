@@ -21,7 +21,7 @@ CREATE TEMP TABLE test_results (
 CREATE OR REPLACE FUNCTION assert_toon(test_name text, actual text, expected text)
 RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO test_results VALUES (test_name, actual = expected, expected, actual);
+    INSERT INTO test_results VALUES (test_name, actual IS NOT DISTINCT FROM expected, expected, actual);
     IF actual IS DISTINCT FROM expected THEN
         RAISE NOTICE 'FAIL: % — expected [%], got [%]', test_name, expected, actual;
     END IF;
@@ -308,6 +308,37 @@ SELECT assert_toon('agg: NaN in tabular',
     E'[1]{val,label}:\n  null,x');
 
 -- =============================================================================
+-- Known limitation (issue #3): a text value 'NaN'/'Infinity'/'-Infinity' in a
+-- record is indistinguishable from a float NaN in row_to_json output, and is
+-- encoded as null (data loss). These tests PIN the documented behavior so any
+-- future change to it is deliberate. The scalar path (to_toon) is correct and
+-- is asserted below.
+-- =============================================================================
+SELECT assert_toon('LIMITATION row: text NaN encodes as null',
+    row_to_toon(q), E'note: null')
+FROM (SELECT 'NaN'::text AS note) q;
+
+SELECT assert_toon('LIMITATION row: text Infinity encodes as null',
+    row_to_toon(q), E'note: null')
+FROM (SELECT 'Infinity'::text AS note) q;
+
+SELECT assert_toon('LIMITATION agg: text -Infinity encodes as null',
+    (SELECT toon_agg(q) FROM (SELECT '-Infinity'::text AS note) q),
+    E'[1]{note}:\n  null');
+
+SELECT assert_toon('LIMITATION array: text NaN element encodes as null',
+    to_toon(ARRAY['NaN','x']), '[2]: null,x');
+
+-- Near-misses must NOT be swallowed
+SELECT assert_toon('row: text nan (lowercase) is a normal string',
+    row_to_toon(q), E'note: nan')
+FROM (SELECT 'nan'::text AS note) q;
+
+SELECT assert_toon('row: NaN-with-suffix is a normal string',
+    row_to_toon(q), E'note: NaN!')
+FROM (SELECT 'NaN!'::text AS note) q;
+
+-- =============================================================================
 -- to_toon — generic value encoding
 -- =============================================================================
 
@@ -373,6 +404,75 @@ SELECT assert_toon('to_toon: record',
     E'f1: 1\nf2: hi');
 
 -- =============================================================================
+-- §11: delimiter validation — only comma, pipe, tab are legal (issue #6)
+-- =============================================================================
+CREATE OR REPLACE FUNCTION assert_raises(test_name text, stmt text, expected_errm text)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    EXECUTE stmt;
+    INSERT INTO test_results VALUES (test_name, false, 'ERROR: ' || expected_errm, '(no error raised)');
+    RAISE NOTICE 'FAIL: % — expected error [%], got none', test_name, expected_errm;
+EXCEPTION WHEN others THEN
+    INSERT INTO test_results VALUES (test_name, position(expected_errm in SQLERRM) > 0,
+                                     'ERROR: ' || expected_errm, 'ERROR: ' || SQLERRM);
+    IF position(expected_errm in SQLERRM) = 0 THEN
+        RAISE NOTICE 'FAIL: % — expected error [%], got [%]', test_name, expected_errm, SQLERRM;
+    END IF;
+END;
+$$;
+
+SELECT assert_raises('delim: empty string rejected (was: field fusion)',
+    $q$ SELECT toon_agg(q, '') FROM (SELECT 12 AS id, 3 AS n) q $q$,
+    'delimiter must be comma, pipe, or tab');
+
+SELECT assert_raises('delim: semicolon rejected in toon_agg',
+    $q$ SELECT toon_agg(q, ';') FROM (SELECT 1 AS id) q $q$,
+    'delimiter must be comma, pipe, or tab');
+
+SELECT assert_raises('delim: newline rejected (was: forged rows)',
+    $q$ SELECT toon_agg(q, E'
+') FROM (SELECT 1 AS id) q $q$,
+    'delimiter must be comma, pipe, or tab');
+
+SELECT assert_raises('delim: rejected in row_to_toon',
+    $q$ SELECT row_to_toon(q, 'xx') FROM (SELECT 1 AS id) q $q$,
+    'delimiter must be comma, pipe, or tab');
+
+SELECT assert_raises('delim: rejected in to_toon',
+    $q$ SELECT to_toon(ARRAY[1,2], ';') $q$,
+    'delimiter must be comma, pipe, or tab');
+
+SELECT assert_raises('delim: NULL rejected',
+    $q$ SELECT row_to_toon(q, NULL) FROM (SELECT 1 AS id) q $q$,
+    'delimiter must be comma, pipe, or tab');
+
+-- All three legal delimiters still accepted
+SELECT assert_toon('delim: tab still legal',
+    (SELECT toon_agg(q, E'	') FROM (SELECT 1 AS id, 'a' AS v) q),
+    E'[1	]{id	v}:
+  1	a');
+
+-- =============================================================================
+-- Volatility: wrappers over to_json/row_to_json must be STABLE (GUC-dependent),
+-- pure string helpers stay IMMUTABLE. Guards against wrong-result expression
+-- indexes (see issue #2).
+-- =============================================================================
+SELECT assert_toon('volatility: STABLE wrappers, IMMUTABLE helpers',
+    (SELECT string_agg(p.proname || '=' || p.provolatile::text, ',' ORDER BY p.proname)
+     FROM pg_proc p
+     JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = (current_schemas(false))[1]
+       AND p.prokind = 'f'
+       AND p.proname IN ('row_to_toon', 'rows_to_toon', 'to_toon',
+                         'toon_agg_ffunc', 'toon_agg_rows_ffunc', 'toon_agg_sfunc',
+                         'toon_delim_ok', 'toon_encode_field', 'toon_escape',
+                         'toon_quote_key', 'toon_quote_value', 'toon_rows_ok')),
+    'row_to_toon=s,rows_to_toon=s,to_toon=s,'
+    || 'toon_agg_ffunc=s,toon_agg_rows_ffunc=s,toon_agg_sfunc=s,'
+    || 'toon_delim_ok=i,toon_encode_field=i,toon_escape=i,'
+    || 'toon_quote_key=i,toon_quote_value=i,toon_rows_ok=i');
+
+-- =============================================================================
 -- Report results
 -- =============================================================================
 SELECT
@@ -386,7 +486,20 @@ FROM test_results
 WHERE NOT passed
 ORDER BY test_name;
 
+-- Fail the run (non-zero psql exit under ON_ERROR_STOP) if any assertion failed
+DO $$
+DECLARE
+    n_failed int;
+BEGIN
+    SELECT count(*) INTO n_failed FROM test_results WHERE NOT passed;
+    IF n_failed > 0 THEN
+        RAISE EXCEPTION '% test(s) failed', n_failed;
+    END IF;
+END;
+$$;
+
 -- Cleanup
 DROP TABLE test_results;
 DROP TABLE users;
 DROP FUNCTION assert_toon;
+DROP FUNCTION assert_raises;

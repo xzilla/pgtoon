@@ -18,8 +18,9 @@ designed for LLM prompt contexts. It conforms to TOON Specification v3.3.
 ```
 pgtoon--0.1.sql          # Canonical extension source (contains @extschema@ markers)
 pgtoon.control           # PostgreSQL extension metadata (relocatable=false)
-test_pgtoon.sql          # Regression suite (67 assertions)
-Makefile                 # Build targets: tle (default), local, clean, help
+test_pgtoon.sql          # Regression suite
+Makefile                 # Build: tle (default), local, install; test-*; clean, help
+.github/workflows/test.yml  # CI: all three install paths on PG 14-18
 create_pgtle_scripts.sh  # Vendored pg_tle helper (from github.com/aws/pg_tle)
 README.md                # User-facing documentation
 AGENTS.md                # This file
@@ -32,7 +33,7 @@ AGENTS.md                # This file
 | Function | Purpose |
 |----------|---------|
 | `to_toon(anyelement, delim)` | Generic encoder: scalars, arrays, records → TOON |
-| `row_to_toon(record, delim)` | Record → TOON object (`key: value` lines) |
+| `row_to_toon(anyelement, delim)` | Record → TOON object (`key: value` lines) |
 | `toon_agg(anyelement [, delim])` | Aggregate → TOON tabular array with header + rows |
 | `rows_to_toon(anyarray [, delim])` | Record array → TOON tabular array, single set-based pass (linear) |
 
@@ -44,8 +45,10 @@ AGENTS.md                # This file
 | `toon_quote_key(text)` | §7.3 key quoting |
 | `toon_quote_value(text, delim)` | §7.2 value quoting |
 | `toon_encode_field(raw_json, text_val, delim)` | Type-aware field encoding |
+| `toon_agg_sfunc(text[], rec, delim)` | Transition for the 2-arg `toon_agg` (validates delimiter, skips NULL records) |
+| `toon_agg_ffunc(text[])` | Final function for the 2-arg `toon_agg` (header + rows) |
 | `toon_agg_rows_ffunc(anycompatiblearray)` | Finalizer for default toon_agg → rows_to_toon(state, ',') |
-| `toon_delim_ok(text)` / `toon_rows_ok(int,int,int)` | Scalar validation helpers (RAISE lives here; plpgsql cannot accept record[]) |
+| `toon_delim_ok(text)` / `toon_rows_ok(int, int)` | Scalar validation helpers (RAISE lives here; plpgsql cannot accept record[]) |
 
 ### Aggregate state & performance rules (issue #4)
 
@@ -79,6 +82,17 @@ Two hard-won rules, both measured on PG 16:
   (→ null per §3) from the string literal "NaN" (→ normal string). PG wraps
   float NaN as a JSON string `"NaN"`, making them otherwise indistinguishable.
 
+## Supported Versions
+
+PostgreSQL 14 and newer. Versions 12 and 13 are past upstream end-of-life and
+are not tested; don't add workarounds for them. When a new PostgreSQL major is
+released, add it to the matrix in `.github/workflows/test.yml`; when one goes
+EOL, drop it from the matrix and bump the floor here and in README.md.
+
+CI builds pg_tle from a pinned commit (`PG_TLE_REF` in the workflow) because
+no tagged pg_tle release supports PG 18 yet. Switch to a release tag once one
+does.
+
 ## Security Model
 
 Every function has:
@@ -108,7 +122,12 @@ cause a parse error. Always use one of the three paths above.
 ### Running tests
 
 ```sh
-# Against a standalone install:
+# Make targets (recreate $TESTDB, fail non-zero on any assertion failure):
+make test              # standalone build
+make test-tle          # pg_tle install; run BEFORE make install
+make install && make test-extension
+
+# Or by hand, against a standalone install:
 make local
 psql -f pgtoon-local.sql
 psql -c "SET search_path = toon, pg_catalog, pg_temp" -f test_pgtoon.sql
@@ -120,13 +139,14 @@ psql -f test_pgtoon.sql  # functions are in public by default
 
 ### Test framework
 
-Tests use a temp table + `assert_toon(name, actual, expected)` helper.
+Tests are an assertion-based regression suite using a temp table + `assert_toon(name, actual, expected)` helper.
 Output is a summary row: `passed | failed | total`. Any failures also print
-the test name with expected vs actual values via `RAISE NOTICE`.
+the test name with expected vs actual values via `RAISE NOTICE`, and a final
+`DO` block raises an exception so psql exits non-zero (this is what CI keys on).
 
 ### Test requirements
 
-- PostgreSQL 12+ (tested on 16 and 18)
+- PostgreSQL 14+ (the supported floor; CI runs 14, 15, 16, 17 and 18)
 - The extension must be installed before running tests
 - Tests are self-contained (CREATE/DROP their own temp tables)
 
@@ -142,7 +162,12 @@ Imperative mood, max 50-char subject. Body explains what/why.
 - SQL keywords lowercase in function bodies
 - 4-space indent inside function bodies
 - `LANGUAGE sql` preferred over `plpgsql` for pure-SQL functions
-- `IMMUTABLE` on all functions (they are deterministic for same input)
+- Volatility: pure string helpers (`toon_escape`, `toon_quote_key`, `toon_quote_value`,
+  `toon_encode_field`) are `IMMUTABLE`. Anything built on `to_json`/`row_to_json`
+  (`to_toon`, `row_to_toon`, the `toon_agg` support functions) must be `STABLE` —
+  their output depends on session GUCs (`TimeZone`, `DateStyle`, `extra_float_digits`),
+  exactly why PostgreSQL marks the json builtins STABLE. Marking them IMMUTABLE
+  allows wrong results in expression indexes.
 - Every function must have `SET search_path = pg_catalog, pg_temp`
 - Internal calls must use `@extschema@.function_name()`
 
@@ -152,13 +177,14 @@ Imperative mood, max 50-char subject. Body explains what/why.
 2. Add `SET search_path = pg_catalog, pg_temp`
 3. Qualify any calls to other pgtoon functions with `@extschema@.`
 4. Add tests in `test_pgtoon.sql`
-5. Verify all three install paths work (`make tle`, `make local`, filesystem)
-6. Run the regression suite: expect 0 failures
+5. Run the suite on all three install paths: `make test`, `make test-tle`,
+   `make install && make test-extension` — expect 0 failures
 
 ### Before committing
 
-- Run `make local && psql -f pgtoon-local.sql && psql -f test_pgtoon.sql` (all tests pass)
-- Ideally test `make tle` + `CREATE EXTENSION` on a real pg_tle install
+- Run `make test` (all tests pass)
+- Ideally also `make test-tle` and `make install && make test-extension`;
+  CI runs all three on PostgreSQL 14–18 for every push and PR
 
 ## TOON Spec Quick Reference (for encoders)
 
@@ -178,6 +204,14 @@ Key rules from the spec that affect implementation decisions:
 
 ## Known Limitations
 
+- **Text values `NaN`/`Infinity`/`-Infinity` in records and arrays**: encoded
+  as `null` by `row_to_toon`, `toon_agg`, and the array path of `to_toon`
+  (data loss). On those paths the encoder sees only `row_to_json`/JSON output, and PostgreSQL emits a float NaN and the *string*
+  `"NaN"` identically (`{"f1":"NaN"}`), so the two are indistinguishable; the
+  ambiguity is resolved toward §3's float rule (NaN → `null`). The scalar
+  `to_toon('NaN'::text)` path has `pg_typeof` available and correctly returns
+  the string. Workaround: cast such columns explicitly, e.g. `'x' || col`, or
+  pre-quote them.
 - **Nested objects/arrays in record fields**: rendered as quoted text representation,
   not as indented TOON nesting. PL/pgSQL lacks the type introspection needed.
 - **Multi-dimensional arrays**: flattened to quoted string, not §9.2 expanded list.

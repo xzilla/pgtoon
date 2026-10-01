@@ -25,7 +25,7 @@ vs. the equivalent JSON (96 bytes larger):
 
 ## Installation
 
-Requires PostgreSQL 12+.
+Requires PostgreSQL 14+.
 
 The canonical source `pgtoon--0.1.sql` contains `@extschema@` markers and a
 locked `search_path`, so it is installed as a PostgreSQL **extension** (the
@@ -168,6 +168,14 @@ This implementation targets the encoder conformance checklist (§13.1):
 
 ### Known Limitations
 
+- **Text values `NaN`/`Infinity`/`-Infinity` in records and arrays**: encoded
+  as `null` by `row_to_toon`, `toon_agg`, and the array path of `to_toon`
+  (data loss). On those paths the encoder sees only `row_to_json`/JSON output, and PostgreSQL emits a float NaN and the *string*
+  `"NaN"` identically (`{"f1":"NaN"}`), so the two are indistinguishable; the
+  ambiguity is resolved toward §3's float rule (NaN → `null`). The scalar
+  `to_toon('NaN'::text)` path has `pg_typeof` available and correctly returns
+  the string. Workaround: cast such columns explicitly, e.g. `'x' || col`, or
+  pre-quote them.
 - **U+0000–U+001F control chars** (other than `\n`, `\r`, `\t`): should emit `\uXXXX` but PG text fields rarely contain these. Not yet implemented.
 - **Nested objects/arrays in record fields**: values that are themselves composite types are rendered via their text representation. True recursive TOON nesting would require deeper type introspection than PL/pgSQL allows.
 - **`toon_agg` assumes tabular-eligible input**: all rows must have the same fields with primitive values. SQL query results naturally satisfy this constraint.
@@ -209,6 +217,23 @@ psql -c "SET search_path = toon, pg_catalog, pg_temp" -f test_pgtoon.sql
 
 Or against a `CREATE EXTENSION` install, with the extension's schema on
 `search_path`.
+
+The Makefile wraps each install path in a test target. Each one recreates a
+scratch database (`TESTDB`, default `pgtoon_test`), connects using the usual
+libpq environment variables (`PGHOST`, `PGPORT`, `PGUSER`), and exits non-zero
+if any assertion fails:
+
+```sh
+make test              # standalone build (alias for test-local)
+make test-tle          # via pg_tle (pg_tle must be in shared_preload_libraries)
+make install           # copy control + SQL into `pg_config --sharedir`/extension
+make test-extension    # via CREATE EXTENSION, default schema and SCHEMA ext
+```
+
+`test-tle` fails if a filesystem copy is installed (pg_tle won't register an
+extension that already exists on disk), so run it before `make install`.
+
+CI (`.github/workflows/test.yml`) runs all three on PostgreSQL 14–18.
 
 The test suite validates key quoting, value quoting, object encoding, tabular array encoding, null handling, NaN/Infinity normalization, and delimiter variants.
 

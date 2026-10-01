@@ -112,13 +112,19 @@ $$;
 -- =============================================================================
 CREATE FUNCTION row_to_toon(rec anyelement, delim text DEFAULT ',')
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     rec_json json;
     lines text[];
 BEGIN
+    -- §11: only comma, pipe, and tab are legal delimiters. Fail loudly
+    -- rather than emit a document that misdescribes its own structure.
+    IF delim IS NULL OR delim NOT IN (',', '|', E'\t') THEN
+        RAISE EXCEPTION 'pgtoon: delimiter must be comma, pipe, or tab (spec §11)';
+    END IF;
+
     rec_json := row_to_json(rec);
 
     SELECT array_agg(
@@ -147,7 +153,7 @@ $$;
 -- =============================================================================
 CREATE FUNCTION to_toon(val anyelement, delim text DEFAULT ',')
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
@@ -158,6 +164,12 @@ DECLARE
     delim_sym text;
     valtype text;
 BEGIN
+    -- §11: only comma, pipe, and tab are legal delimiters. Fail loudly
+    -- rather than emit a document that misdescribes its own structure.
+    IF delim IS NULL OR delim NOT IN (',', '|', E'\t') THEN
+        RAISE EXCEPTION 'pgtoon: delimiter must be comma, pipe, or tab (spec §11)';
+    END IF;
+
     IF val IS NULL THEN
         RETURN 'null';
     END IF;
@@ -370,13 +382,19 @@ CREATE AGGREGATE toon_agg(anycompatible) (
 
 CREATE FUNCTION toon_agg_sfunc(state text[], rec anyelement, delim text DEFAULT ',')
 RETURNS text[]
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     rec_json json;
     row_line text;
 BEGIN
+    -- §11: only comma, pipe, and tab are legal delimiters. Fail loudly
+    -- rather than emit a document that misdescribes its own structure.
+    IF delim IS NULL OR delim NOT IN (',', '|', E'\t') THEN
+        RAISE EXCEPTION 'pgtoon: delimiter must be comma, pipe, or tab (spec §11)';
+    END IF;
+
     -- Skip NULL records (e.g. unmatched LEFT JOIN rows): a TOON tabular row
     -- cannot represent a null record, and [N] must describe the actual rows.
     IF rec IS NULL THEN
@@ -409,7 +427,7 @@ $$;
 
 CREATE FUNCTION toon_agg_ffunc(state text[])
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
