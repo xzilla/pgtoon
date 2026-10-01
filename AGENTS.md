@@ -18,7 +18,7 @@ designed for LLM prompt contexts. It conforms to TOON Specification v3.3.
 ```
 pgtoon--0.1.sql          # Canonical extension source (contains @extschema@ markers)
 pgtoon.control           # PostgreSQL extension metadata (relocatable=false)
-test_pgtoon.sql          # Regression suite (67 assertions)
+test_pgtoon.sql          # Regression suite
 Makefile                 # Build: tle (default), local, install; test-*; clean, help
 .github/workflows/test.yml  # CI: all three install paths on PG 14-18
 create_pgtle_scripts.sh  # Vendored pg_tle helper (from github.com/aws/pg_tle)
@@ -122,7 +122,7 @@ psql -f test_pgtoon.sql  # functions are in public by default
 
 ### Test framework
 
-Tests use a temp table + `assert_toon(name, actual, expected)` helper.
+Tests are an assertion-based regression suite using a temp table + `assert_toon(name, actual, expected)` helper.
 Output is a summary row: `passed | failed | total`. Any failures also print
 the test name with expected vs actual values via `RAISE NOTICE`, and a final
 `DO` block raises an exception so psql exits non-zero (this is what CI keys on).
@@ -145,7 +145,12 @@ Imperative mood, max 50-char subject. Body explains what/why.
 - SQL keywords lowercase in function bodies
 - 4-space indent inside function bodies
 - `LANGUAGE sql` preferred over `plpgsql` for pure-SQL functions
-- `IMMUTABLE` on all functions (they are deterministic for same input)
+- Volatility: pure string helpers (`toon_escape`, `toon_quote_key`, `toon_quote_value`,
+  `toon_encode_field`) are `IMMUTABLE`. Anything built on `to_json`/`row_to_json`
+  (`to_toon`, `row_to_toon`, the `toon_agg` support functions) must be `STABLE` —
+  their output depends on session GUCs (`TimeZone`, `DateStyle`, `extra_float_digits`),
+  exactly why PostgreSQL marks the json builtins STABLE. Marking them IMMUTABLE
+  allows wrong results in expression indexes.
 - Every function must have `SET search_path = pg_catalog, pg_temp`
 - Internal calls must use `@extschema@.function_name()`
 

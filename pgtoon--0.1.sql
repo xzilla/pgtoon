@@ -112,13 +112,19 @@ $$;
 -- =============================================================================
 CREATE FUNCTION row_to_toon(rec anyelement, delim text DEFAULT ',')
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     rec_json json;
     lines text[];
 BEGIN
+    -- §11: only comma, pipe, and tab are legal delimiters. Fail loudly
+    -- rather than emit a document that misdescribes its own structure.
+    IF delim IS NULL OR delim NOT IN (',', '|', E'\t') THEN
+        RAISE EXCEPTION 'pgtoon: delimiter must be comma, pipe, or tab (spec §11)';
+    END IF;
+
     rec_json := row_to_json(rec);
 
     SELECT array_agg(
@@ -147,7 +153,7 @@ $$;
 -- =============================================================================
 CREATE FUNCTION to_toon(val anyelement, delim text DEFAULT ',')
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
@@ -158,6 +164,12 @@ DECLARE
     delim_sym text;
     valtype text;
 BEGIN
+    -- §11: only comma, pipe, and tab are legal delimiters. Fail loudly
+    -- rather than emit a document that misdescribes its own structure.
+    IF delim IS NULL OR delim NOT IN (',', '|', E'\t') THEN
+        RAISE EXCEPTION 'pgtoon: delimiter must be comma, pipe, or tab (spec §11)';
+    END IF;
+
     IF val IS NULL THEN
         RETURN 'null';
     END IF;
@@ -246,13 +258,19 @@ CREATE TYPE toon_agg_state AS (
 
 CREATE FUNCTION toon_agg_sfunc(state @extschema@.toon_agg_state, rec anyelement, delim text DEFAULT ',')
 RETURNS @extschema@.toon_agg_state
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     rec_json json;
     row_line text;
 BEGIN
+    -- §11: only comma, pipe, and tab are legal delimiters. Fail loudly
+    -- rather than emit a document that misdescribes its own structure.
+    IF delim IS NULL OR delim NOT IN (',', '|', E'\t') THEN
+        RAISE EXCEPTION 'pgtoon: delimiter must be comma, pipe, or tab (spec §11)';
+    END IF;
+
     rec_json := row_to_json(rec);
 
     -- First invocation: capture field names
@@ -281,7 +299,7 @@ $$;
 
 CREATE FUNCTION toon_agg_ffunc(state @extschema@.toon_agg_state)
 RETURNS text
-LANGUAGE plpgsql IMMUTABLE
+LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
@@ -330,7 +348,7 @@ CREATE AGGREGATE toon_agg(anyelement, text) (
 -- Convenience overload with default comma delimiter
 CREATE FUNCTION toon_agg_sfunc_default(state @extschema@.toon_agg_state, rec anyelement)
 RETURNS @extschema@.toon_agg_state
-LANGUAGE sql IMMUTABLE
+LANGUAGE sql STABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
     SELECT @extschema@.toon_agg_sfunc(state, rec, ',')
