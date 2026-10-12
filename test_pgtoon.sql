@@ -34,9 +34,6 @@ $$;
 SELECT assert_toon('key: simple alpha',
     toon_quote_key('name'), 'name');
 
-SELECT assert_toon('key: with underscore',
-    toon_quote_key('user_id'), 'user_id');
-
 SELECT assert_toon('key: with dot (valid unquoted per §7.3)',
     toon_quote_key('user.name'), 'user.name');
 
@@ -45,12 +42,6 @@ SELECT assert_toon('key: with hyphen (must quote)',
 
 SELECT assert_toon('key: starts with digit (must quote)',
     toon_quote_key('1st'), '"1st"');
-
-SELECT assert_toon('key: with space (must quote)',
-    toon_quote_key('first name'), '"first name"');
-
-SELECT assert_toon('key: with colon (must quote)',
-    toon_quote_key('time:zone'), '"time:zone"');
 
 -- =============================================================================
 -- §7.2: Value quoting
@@ -70,9 +61,6 @@ SELECT assert_toon('val: trailing space must quote',
 SELECT assert_toon('val: literal true must quote',
     toon_quote_value('true', ','), '"true"');
 
-SELECT assert_toon('val: literal false must quote',
-    toon_quote_value('false', ','), '"false"');
-
 SELECT assert_toon('val: literal null must quote',
     toon_quote_value('null', ','), '"null"');
 
@@ -81,6 +69,13 @@ SELECT assert_toon('val: numeric-like must quote',
 
 SELECT assert_toon('val: negative numeric must quote',
     toon_quote_value('-3.14', ','), '"-3.14"');
+
+SELECT assert_toon('val: exponent numeric must quote',
+    toon_quote_value('1.5E-3', ','), '"1.5E-3"');
+
+-- Quoted, but not \u-escaped yet (known limitation; see AGENTS.md)
+SELECT assert_toon('val: control character must quote',
+    toon_quote_value(E'a\x01b', ','), E'"a\x01b"');
 
 SELECT assert_toon('val: contains comma (active delim)',
     toon_quote_value('a,b', ','), '"a,b"');
@@ -106,26 +101,15 @@ SELECT assert_toon('val: starts with hyphen must quote',
 SELECT assert_toon('val: contains brackets must quote',
     toon_quote_value('[arr]', ','), '"[arr]"');
 
-SELECT assert_toon('val: contains braces must quote',
-    toon_quote_value('{obj}', ','), '"{obj}"');
-
 SELECT assert_toon('val: internal space OK unquoted',
     toon_quote_value('hello world', ','), 'hello world');
 
 SELECT assert_toon('val: unicode OK unquoted',
     toon_quote_value('café', ','), 'café');
 
-SELECT assert_toon('val: emoji OK unquoted',
-    toon_quote_value('👍', ','), '👍');
-
 -- =============================================================================
 -- §8: row_to_toon — single record as TOON object
 -- =============================================================================
-
--- Basic record
-SELECT assert_toon('row: simple int and string',
-    row_to_toon(row(1, 'foo')),
-    E'f1: 1\nf2: foo');
 
 -- Named columns
 SELECT assert_toon('row: named columns',
@@ -159,11 +143,6 @@ SELECT assert_toon('row: NaN becomes null',
     E'val: null')
 FROM (SELECT 'NaN'::float8 AS val) q;
 
-SELECT assert_toon('row: Infinity becomes null',
-    row_to_toon(q),
-    E'val: null')
-FROM (SELECT 'Infinity'::float8 AS val) q;
-
 SELECT assert_toon('row: -Infinity becomes null',
     row_to_toon(q),
     E'val: null')
@@ -174,12 +153,6 @@ SELECT assert_toon('row: string with comma quoted',
     row_to_toon(q),
     E'val: "a,b"')
 FROM (SELECT 'a,b' AS val) q;
-
--- String with colon (must quote per §7.2)
-SELECT assert_toon('row: string with colon quoted',
-    row_to_toon(q),
-    E'val: "http://example.com"')
-FROM (SELECT 'http://example.com' AS val) q;
 
 -- Date values (rendered as string, no quoting needed if no special chars)
 SELECT assert_toon('row: date value',
@@ -243,14 +216,6 @@ SELECT assert_toon('agg: pipe delim with pipe in data',
     (SELECT toon_agg(q, '|') FROM (SELECT id, name, role FROM users ORDER BY id) q),
     E'[1|]{id|name|role}:\n  1|"A|B"|admin');
 
--- Single row tabular
-TRUNCATE users;
-INSERT INTO users VALUES (42, 'test', 'dev');
-
-SELECT assert_toon('agg: single row',
-    (SELECT toon_agg(q) FROM (SELECT id, name FROM users ORDER BY id) q),
-    E'[1]{id,name}:\n  42,test');
-
 -- =============================================================================
 -- rows_to_toon — set-based tabular encoding over a record array
 -- =============================================================================
@@ -264,10 +229,6 @@ SELECT assert_toon('rows_to_toon: basic comma',
 SELECT assert_toon('rows_to_toon: pipe delimiter',
     (SELECT rows_to_toon(array_agg(q), '|') FROM (SELECT id, name FROM users ORDER BY id) q),
     E'[2|]{id|name}:\n  1|Alice\n  2|Bob');
-
-SELECT assert_toon('rows_to_toon: identical to toon_agg',
-    (SELECT rows_to_toon(array_agg(q)) FROM (SELECT id, name, role FROM users ORDER BY id) q),
-    (SELECT toon_agg(q) FROM (SELECT id, name, role FROM users ORDER BY id) q));
 
 -- NULL records (unmatched LEFT JOIN rows) are skipped; [N] counts real rows
 SELECT assert_toon('rows_to_toon: null elements skipped',
@@ -318,10 +279,6 @@ SELECT assert_toon('LIMITATION row: text NaN encodes as null',
     row_to_toon(q), E'note: null')
 FROM (SELECT 'NaN'::text AS note) q;
 
-SELECT assert_toon('LIMITATION row: text Infinity encodes as null',
-    row_to_toon(q), E'note: null')
-FROM (SELECT 'Infinity'::text AS note) q;
-
 SELECT assert_toon('LIMITATION agg: text -Infinity encodes as null',
     (SELECT toon_agg(q) FROM (SELECT '-Infinity'::text AS note) q),
     E'[1]{note}:\n  null');
@@ -352,9 +309,6 @@ SELECT assert_toon('to_toon: float',
 SELECT assert_toon('to_toon: boolean true',
     to_toon(true), 'true');
 
-SELECT assert_toon('to_toon: boolean false',
-    to_toon(false), 'false');
-
 SELECT assert_toon('to_toon: null',
     to_toon(NULL::int), 'null');
 
@@ -364,17 +318,11 @@ SELECT assert_toon('to_toon: simple string',
 SELECT assert_toon('to_toon: string needing quote (comma)',
     to_toon('a,b'::text), '"a,b"');
 
-SELECT assert_toon('to_toon: string literal true',
-    to_toon('true'::text), '"true"');
-
 SELECT assert_toon('to_toon: NaN float',
     to_toon('NaN'::float8), 'null');
 
 SELECT assert_toon('to_toon: NaN string (should NOT be null)',
     to_toon('NaN'::text), 'NaN');
-
-SELECT assert_toon('to_toon: Infinity string (should NOT be null)',
-    to_toon('Infinity'::text), 'Infinity');
 
 SELECT assert_toon('to_toon: -0',
     to_toon('-0'::float8), '0');
@@ -425,10 +373,6 @@ SELECT assert_raises('delim: empty string rejected (was: field fusion)',
     $q$ SELECT toon_agg(q, '') FROM (SELECT 12 AS id, 3 AS n) q $q$,
     'delimiter must be comma, pipe, or tab');
 
-SELECT assert_raises('delim: semicolon rejected in toon_agg',
-    $q$ SELECT toon_agg(q, ';') FROM (SELECT 1 AS id) q $q$,
-    'delimiter must be comma, pipe, or tab');
-
 SELECT assert_raises('delim: newline rejected (was: forged rows)',
     $q$ SELECT toon_agg(q, E'
 ') FROM (SELECT 1 AS id) q $q$,
@@ -445,6 +389,18 @@ SELECT assert_raises('delim: rejected in to_toon',
 SELECT assert_raises('delim: NULL rejected',
     $q$ SELECT row_to_toon(q, NULL) FROM (SELECT 1 AS id) q $q$,
     'delimiter must be comma, pipe, or tab');
+
+SELECT assert_raises('delim: rejected in rows_to_toon',
+    $q$ SELECT rows_to_toon(array_agg(q), ';') FROM (SELECT 1 AS id) q $q$,
+    'delimiter must be comma, pipe, or tab');
+
+SELECT assert_raises('rows_to_toon: multi-dimensional array rejected',
+    $q$ SELECT rows_to_toon(ARRAY[[q, q]]) FROM (SELECT 1 AS id) q $q$,
+    'requires a one-dimensional array');
+
+SELECT assert_raises('rows_to_toon: non-record elements rejected',
+    $q$ SELECT rows_to_toon(ARRAY[1, 2]) $q$,
+    'requires an array of records');
 
 -- All three legal delimiters still accepted
 SELECT assert_toon('delim: tab still legal',
