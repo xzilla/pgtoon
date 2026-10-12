@@ -17,6 +17,9 @@ jobs:
   test:
     name: PostgreSQL ${{ matrix.pg }}
     runs-on: ubuntu-24.04
+    # A healthy job takes about a minute; fail fast instead of hanging for
+    # GitHub's 6-hour default if a package mirror stalls.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -38,16 +41,23 @@ jobs:
           # Don't let the package auto-create a "main" cluster; we make our own.
           echo 'create_main_cluster = false' | sudo tee -a /etc/postgresql-common/createcluster.conf
           sudo apt-get install -y --no-install-recommends \
-            postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} \
-            flex bison libkrb5-dev
+            postgresql-${{ matrix.pg }} libpq-dev flex bison libkrb5-dev
+          # postgresql-server-dev-N hard-depends on clang and llvm-dev (~75 MB
+          # from the Ubuntu mirror, which often crawls on hosted runners) only
+          # to build JIT bitcode, which pg_tle doesn't need. Install the headers
+          # without those two dependencies; pg_tle is built with with_llvm=no.
+          # This leaves dpkg with unmet dependencies, so no apt-get after this.
+          cd "$RUNNER_TEMP"
+          apt-get download postgresql-server-dev-${{ matrix.pg }}
+          sudo dpkg -i --force-depends postgresql-server-dev-${{ matrix.pg }}_*.deb
 
       - name: Build and install pg_tle
         run: |
           git init -q pg_tle
           git -C pg_tle fetch -q --depth 1 https://github.com/aws/pg_tle "$PG_TLE_REF"
           git -C pg_tle checkout -q FETCH_HEAD
-          make -C pg_tle PG_CONFIG="$PG_CONFIG"
-          sudo make -C pg_tle install PG_CONFIG="$PG_CONFIG"
+          make -C pg_tle with_llvm=no PG_CONFIG="$PG_CONFIG"
+          sudo make -C pg_tle install with_llvm=no PG_CONFIG="$PG_CONFIG"
 
       - name: Start cluster
         run: |

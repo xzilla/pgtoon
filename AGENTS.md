@@ -93,6 +93,11 @@ CI builds pg_tle from a pinned commit (`PG_TLE_REF` in the workflow) because
 no tagged pg_tle release supports PG 18 yet. Switch to a release tag once one
 does.
 
+CI installs `postgresql-server-dev-N` without its clang/llvm-dev dependencies
+and builds pg_tle with `with_llvm=no` (no JIT bitcode), which skips a ~75 MB
+download that used to stall jobs for 10–20 minutes. Jobs time out after 15
+minutes.
+
 ## Security Model
 
 Every function has:
