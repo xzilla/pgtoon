@@ -122,6 +122,34 @@ There are three install methods. The canonical source `pgtoon--0.1.sql` contains
 **You cannot `\i pgtoon--0.1.sql` directly** — the `@extschema@` markers will
 cause a parse error. Always use one of the three paths above.
 
+### pg_tle
+
+[pg_tle](https://github.com/aws/pg_tle) (Trusted Language Extensions) must be
+built and installed into the server before `make test-tle` or a pg_tle install
+can work. Upstream docs (pinned to the release that covers PG 14–19):
+
+- [Installation](https://github.com/aws/pg_tle/blob/v1.5.3/docs/01_install.md):
+  building from source, prerequisites, and enabling `shared_preload_libraries`
+- [Managing extensions](https://github.com/aws/pg_tle/blob/v1.5.3/docs/03_managing_extensions.md):
+  `pgtle.install_extension`, `pgtle.install_update_path` (upgrade scripts),
+  `pgtle.uninstall_extension`
+- [Supported PostgreSQL versions](https://github.com/aws/pg_tle/blob/v1.5.3/README.md#supported-postgresql-versions)
+
+Notes from building it for this repo (`.github/workflows/test.yml` does all of
+this and is the reference):
+
+- Build with `make PG_CONFIG=/usr/lib/postgresql/N/bin/pg_config` and install
+  with `sudo make install PG_CONFIG=...`. Besides the server headers
+  (`postgresql-server-dev-N`), the build needs `flex`, `bison`, and
+  `libkrb5-dev` (for `gssapi/gssapi.h`).
+- Pass `with_llvm=no` to both `make` and `make install` if clang/llvm aren't
+  installed; it skips JIT bitcode, which pg_tle doesn't need.
+- `pg_tle` must be in `shared_preload_libraries` and the server restarted, or
+  `CREATE EXTENSION pg_tle` fails.
+- pg_tle refuses to register an extension that is also installed on the
+  filesystem (`control file already exists`). Run `make test-tle` before
+  `make install`, or `make uninstall` first.
+
 ## Testing
 
 ### Running tests
