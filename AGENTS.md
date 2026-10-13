@@ -89,10 +89,6 @@ are not tested; don't add workarounds for them. When a new PostgreSQL major is
 released, add it to the matrix in `.github/workflows/test.yml`; when one goes
 EOL, drop it from the matrix and bump the floor here and in README.md.
 
-CI builds pg_tle from a pinned commit (`PG_TLE_REF` in the workflow) because
-no tagged pg_tle release supports PG 18 yet. Switch to a release tag once one
-does.
-
 CI installs `postgresql-server-dev-N` without its clang/llvm-dev dependencies
 and builds pg_tle with `with_llvm=no` (no JIT bitcode), which skips a ~75 MB
 download that used to stall jobs for 10–20 minutes. Jobs time out after 15
